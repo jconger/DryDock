@@ -44,3 +44,5 @@ pnpm --dir apps/command-center-ui cc config set-command proposePlans "propose 2 
 pnpm --dir apps/command-center-ui cc commands
 pnpm --dir apps/command-center-ui cc interactive
 ```
+
+Add `--test` to any command to print the planned calls without making writes or API requests.

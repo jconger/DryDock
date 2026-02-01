@@ -31,6 +31,13 @@ pnpm --dir apps/command-center-ui cc commands
 pnpm --dir apps/command-center-ui cc commands --owner <org> --repo <name>
 ```
 
+## Test mode (dry run)
+Add `--test` to print the planned commands without making writes or API calls.
+
+```bash
+pnpm --dir apps/command-center-ui cc pr-comment post --owner org --repo repo --pr 123 --body "/cc qa generate" --test
+```
+
 ## Data + workflow actions (CLI is source of truth)
 ```bash
 # Features

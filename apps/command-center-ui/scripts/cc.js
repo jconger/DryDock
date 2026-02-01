@@ -147,30 +147,31 @@ function usage() {
   return `DryDock CLI
 
 Usage:
-  cc interactive
-  cc init [--provider <opencode|codex|claude-code>] [--owner <org>] [--repo <name>] [--token <ghp_...>]
-  cc config show [--json]
-  cc config set-provider <opencode|codex|claude-code>
-  cc config set-prefix <commandPrefix>
-  cc config set-command <proposePlans|implement|fixRobust> <text>
-  cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text>
-  cc commands [--owner <org> --repo <name>]
-  cc features list [--limit N] [--json]
-  cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json]
-  cc features status --id <feature_id> --status <STATUS> [--json]
-  cc repos list [--json]
-  cc repos add --owner <org> --name <repo> [--default-branch main] [--github-repo-id 123] [--json]
-  cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode] [--command-propose "<text>"] [--command-implement "<text>"] [--command-fix "<text>"] [--json]
-  cc qa get --feature-id <id> [--json]
-  cc qa create --feature-id <id> --items "one|two|three" [--json]
-  cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json]
-  cc prs list --owner <org> --repo <name> [--json]
-  cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text> [--json]
-  cc recent list [--limit N] [--json]
+  cc interactive [--test]
+  cc init [--provider <opencode|codex|claude-code>] [--owner <org>] [--repo <name>] [--token <ghp_...>] [--test]
+  cc config show [--json] [--test]
+  cc config set-provider <opencode|codex|claude-code> [--test]
+  cc config set-prefix <commandPrefix> [--test]
+  cc config set-command <proposePlans|implement|fixRobust> <text> [--test]
+  cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text> [--test]
+  cc commands [--owner <org> --repo <name>] [--test]
+  cc features list [--limit N] [--json] [--test]
+  cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json] [--test]
+  cc features status --id <feature_id> --status <STATUS> [--json] [--test]
+  cc repos list [--json] [--test]
+  cc repos add --owner <org> --name <repo> [--default-branch main] [--github-repo-id 123] [--json] [--test]
+  cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode] [--command-propose "<text>"] [--command-implement "<text>"] [--command-fix "<text>"] [--json] [--test]
+  cc qa get --feature-id <id> [--json] [--test]
+  cc qa create --feature-id <id> --items "one|two|three" [--json] [--test]
+  cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json] [--test]
+  cc prs list --owner <org> --repo <name> [--json] [--test]
+  cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text> [--json] [--test]
+  cc recent list [--limit N] [--json] [--test]
 
 Notes:
   - Config file: .command-center.jsonc (created if missing)
   - GH_TOKEN and defaults live in apps/command-center-ui/.env.local
+  - --test prints planned commands and skips writes/API calls
 `;
 }
 
@@ -187,6 +188,15 @@ function parseFlagValue(rest, flag) {
 
 function hasFlag(rest, flag) {
   return rest.includes(flag);
+}
+
+function outputDryRun(commands, jsonOutput) {
+  if (jsonOutput) {
+    console.log(JSON.stringify({ dryRun: true, commands }, null, 2));
+    return;
+  }
+  console.log("Dry run - commands:");
+  commands.forEach((cmd) => console.log(`- ${cmd}`));
 }
 
 function updateEnvLocal({ owner, repo, token }) {
@@ -484,6 +494,7 @@ async function postPrComment(owner, repo, prNumber, body) {
 async function main() {
   const { command, rest } = parseArgs(process.argv.slice(2));
   const jsonOutput = hasFlag(rest, "--json");
+  const testMode = hasFlag(rest, "--test");
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     console.log(usage());
@@ -491,6 +502,10 @@ async function main() {
   }
 
   if (command === "interactive") {
+    if (testMode) {
+      outputDryRun(["prompt for interactive selections"], jsonOutput);
+      return;
+    }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
     console.log("DryDock CLI - Interactive");
@@ -571,6 +586,19 @@ async function main() {
     const owner = parseFlagValue(rest, "--owner");
     const repo = parseFlagValue(rest, "--repo");
     const token = parseFlagValue(rest, "--token");
+    if (testMode) {
+      const repoRoot = findRepoRoot();
+      const configPath = path.join(repoRoot, CONFIG_FILENAME);
+      const commands = [
+        `ensure config exists at ${configPath}`,
+        `set agent harness provider to ${provider}`,
+      ];
+      if (owner || repo || token) {
+        commands.push("write apps/command-center-ui/.env.local");
+      }
+      outputDryRun(commands, jsonOutput);
+      return;
+    }
     const configPath = ensureConfigPath();
     const { config } = loadConfig();
     config.agentHarness = {
@@ -598,6 +626,10 @@ async function main() {
     }
 
     if (sub === "show") {
+      if (testMode) {
+        outputDryRun([`read ${configPath}`, "print resolved config"], jsonOutput);
+        return;
+      }
       const agent = resolveAgentHarness(config);
       const protocol = resolveCommentProtocol(config);
       const payload = { configPath, agentHarness: agent, commentProtocol: protocol };
@@ -610,6 +642,10 @@ async function main() {
       if (!provider || !(provider in AGENT_PRESETS)) {
         console.error("Provider must be one of: opencode, codex, claude-code");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`update ${configPath} agentHarness.provider=${provider}`], jsonOutput);
+        return;
       }
       config.agentHarness = {
         ...(config.agentHarness ?? {}),
@@ -627,6 +663,10 @@ async function main() {
         console.error("Usage: cc config set-prefix <commandPrefix>");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([`update ${configPath} agentHarness.commandPrefix=${prefix}`], jsonOutput);
+        return;
+      }
       config.agentHarness = { ...(config.agentHarness ?? {}), commandPrefix: prefix };
       writeConfig(configPath, config);
       console.log(`Agent command prefix updated to ${prefix}`);
@@ -639,6 +679,10 @@ async function main() {
       if (!key || !value || !(key in DEFAULT_AGENT_COMMANDS)) {
         console.error("Usage: cc config set-command <proposePlans|implement|fixRobust> <text>");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`update ${configPath} agentHarness.commands.${key}="${value}"`], jsonOutput);
+        return;
       }
       config.agentHarness = {
         ...(config.agentHarness ?? {}),
@@ -656,6 +700,10 @@ async function main() {
         console.error("Usage: cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text>");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([`update ${configPath} commentProtocol.commands.${key}="${value}"`], jsonOutput);
+        return;
+      }
       config.commentProtocol = {
         ...(config.commentProtocol ?? {}),
         commands: { ...DEFAULT_COMMENT_PROTOCOL.commands, ...(config.commentProtocol?.commands ?? {}), [key]: value },
@@ -670,6 +718,13 @@ async function main() {
   }
 
   if (command === "commands") {
+    if (testMode) {
+      const repoOwner = parseFlagValue(rest, "--owner");
+      const repoName = parseFlagValue(rest, "--repo");
+      const extra = repoOwner && repoName ? ` for ${repoOwner}/${repoName}` : "";
+      outputDryRun([`read ${CONFIG_FILENAME}`, `print command list${extra}`], jsonOutput);
+      return;
+    }
     const { config } = loadConfig();
     const agent = resolveAgentHarness(config);
     const protocol = resolveCommentProtocol(config);
@@ -695,6 +750,11 @@ async function main() {
     const sub = rest[0];
     if (sub === "list") {
       const limit = Number(parseFlagValue(rest, "--limit") ?? "50");
+      if (testMode) {
+        const safeLimit = Number.isFinite(limit) ? limit : 50;
+        outputDryRun([`sqlite: SELECT * FROM features ORDER BY created_at DESC LIMIT ${safeLimit}`], jsonOutput);
+        return;
+      }
       const items = listFeatures(Number.isFinite(limit) ? limit : 50);
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
       return;
@@ -704,6 +764,10 @@ async function main() {
       if (!title) {
         console.error("Usage: cc features create --title <title>");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: INSERT feature "${title}"`], jsonOutput);
+        return;
       }
       const payload = {
         title,
@@ -726,6 +790,10 @@ async function main() {
         console.error("Usage: cc features status --id <feature_id> --status <STATUS>");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([`sqlite: UPDATE features SET status=${status} WHERE id=${id}`], jsonOutput);
+        return;
+      }
       updateFeatureStatus(id, status);
       console.log(jsonOutput ? JSON.stringify({ ok: true }) : JSON.stringify({ ok: true }, null, 2));
       return;
@@ -735,6 +803,10 @@ async function main() {
   if (command === "repos") {
     const sub = rest[0];
     if (sub === "list") {
+      if (testMode) {
+        outputDryRun(["sqlite: SELECT * FROM repos ORDER BY created_at DESC"], jsonOutput);
+        return;
+      }
       const items = listRepos();
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
       return;
@@ -745,6 +817,10 @@ async function main() {
       if (!owner || !name) {
         console.error("Usage: cc repos add --owner <org> --name <repo> [--default-branch main]");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: INSERT repo ${owner}/${name}`], jsonOutput);
+        return;
       }
       const repo = upsertRepo({
         owner,
@@ -767,6 +843,10 @@ async function main() {
       if (!owner || !name) {
         console.error("Usage: cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode]");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: UPDATE repo ${owner}/${name} agent settings`], jsonOutput);
+        return;
       }
       const base = resolveAgentHarness(loadConfig().config);
       const agentConfig = {
@@ -798,6 +878,10 @@ async function main() {
         console.error("--feature-id is required");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([`sqlite: SELECT * FROM qa_packets WHERE feature_id=${featureId} ORDER BY id DESC LIMIT 1`], jsonOutput);
+        return;
+      }
       const packet = getLatestQaPacket(featureId);
       const item = packet ? { ...packet, checklist: JSON.parse(packet.checklist_json || "[]") } : null;
       console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
@@ -809,6 +893,13 @@ async function main() {
       if (!featureId || !itemsRaw) {
         console.error("Usage: cc qa create --feature-id <id> --items \"one|two|three\"");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([
+          `sqlite: INSERT qa_packet for feature ${featureId}`,
+          `sqlite: UPDATE features SET status=QA_IN_PROGRESS WHERE id=${featureId}`,
+        ], jsonOutput);
+        return;
       }
       const checklist = itemsRaw.split("|").map((text, idx) => ({
         id: `item_${idx + 1}`,
@@ -828,6 +919,13 @@ async function main() {
       if (!id) {
         console.error("Usage: cc qa update --id <id> [--status <status>] [--checklist-json <json>]");
         process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([
+          `sqlite: UPDATE qa_packets SET status/checklist_json WHERE id=${id}`,
+          "sqlite: UPDATE features status based on QA status",
+        ], jsonOutput);
+        return;
       }
       const status = parseFlagValue(rest, "--status");
       const checklistJson = parseFlagValue(rest, "--checklist-json");
@@ -854,6 +952,10 @@ async function main() {
         console.error("Usage: cc prs list --owner <org> --repo <name>");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([`github: pulls.list owner=${owner} repo=${repo} state=open per_page=20`], jsonOutput);
+        return;
+      }
       const items = await listOpenPrs(owner, repo);
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
       return;
@@ -871,6 +973,13 @@ async function main() {
         console.error("Usage: cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text>");
         process.exit(1);
       }
+      if (testMode) {
+        outputDryRun([
+          `github: issues.createComment owner=${owner} repo=${repo} issue_number=${pr}`,
+          "sqlite: INSERT pr_targets",
+        ], jsonOutput);
+        return;
+      }
       const url = await postPrComment(owner, repo, pr, body);
       console.log(jsonOutput ? JSON.stringify({ url }) : JSON.stringify({ url }, null, 2));
       return;
@@ -881,6 +990,11 @@ async function main() {
     const sub = rest[0];
     if (sub === "list") {
       const limit = Number(parseFlagValue(rest, "--limit") ?? "12");
+      if (testMode) {
+        const safeLimit = Number.isFinite(limit) ? limit : 12;
+        outputDryRun([`sqlite: SELECT owner, repo, pr_number, created_at FROM pr_targets ORDER BY id DESC LIMIT ${safeLimit}`], jsonOutput);
+        return;
+      }
       const items = listRecentTargets(Number.isFinite(limit) ? limit : 12);
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
       return;
