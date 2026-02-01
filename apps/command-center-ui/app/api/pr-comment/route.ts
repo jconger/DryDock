@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getOctokit } from "@/lib/github";
-import { listRecentTargets, savePrTarget } from "@/lib/db";
+import { runCliJson } from "@/lib/cli";
 
 const PostSchema = z.object({
   owner: z.string().min(1),
@@ -13,8 +12,17 @@ const PostSchema = z.object({
 export async function GET(req: NextRequest) {
   const mode = new URL(req.url).searchParams.get("mode");
   if (mode === "recent") {
-    const items = listRecentTargets(12);
-    return NextResponse.json({ items });
+    const data = await runCliJson<{ items: unknown[]; ok?: boolean; error?: string }>([
+      "recent",
+      "list",
+      "--limit",
+      "12",
+      "--json",
+    ]);
+    if ("ok" in data && data.ok === false) {
+      return NextResponse.json(data, { status: 400 });
+    }
+    return NextResponse.json(data);
   }
   return NextResponse.json({ ok: true });
 }
@@ -24,17 +32,23 @@ export async function POST(req: NextRequest) {
     const json = await req.json();
     const { owner, repo, pr_number, body } = PostSchema.parse(json);
 
-    const octokit = getOctokit();
-    const resp = await octokit.issues.createComment({
+    const data = await runCliJson<{ url: string; ok?: boolean; error?: string }>([
+      "pr-comment",
+      "post",
+      "--owner",
       owner,
+      "--repo",
       repo,
-      issue_number: pr_number, // PR comments use issue API
+      "--pr",
+      String(pr_number),
+      "--body",
       body,
-    });
-
-    savePrTarget(owner, repo, pr_number);
-
-    return NextResponse.json({ ok: true, url: resp.data.html_url });
+      "--json",
+    ]);
+    if ("ok" in data && data.ok === false) {
+      return NextResponse.json(data, { status: 400 });
+    }
+    return NextResponse.json(data);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ ok: false, error: message }, { status: 400 });

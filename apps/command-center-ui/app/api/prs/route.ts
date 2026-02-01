@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getOctokit } from "@/lib/github";
+import { runCliJson } from "@/lib/cli";
 
 const QuerySchema = z.object({
   owner: z.string().min(1),
@@ -15,15 +15,19 @@ export async function GET(req: NextRequest) {
       repo: url.searchParams.get("repo"),
     });
 
-    const octokit = getOctokit();
-    const resp = await octokit.pulls.list({
+    const data = await runCliJson<{ items: unknown[]; ok?: boolean; error?: string }>([
+      "prs",
+      "list",
+      "--owner",
       owner,
+      "--repo",
       repo,
-      state: "open",
-      per_page: 20,
-    });
-
-    return NextResponse.json({ items: resp.data });
+      "--json",
+    ]);
+    if ("ok" in data && data.ok === false) {
+      return NextResponse.json(data, { status: 400 });
+    }
+    return NextResponse.json(data);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed";
     return NextResponse.json({ items: [], error: message }, { status: 400 });

@@ -2,6 +2,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
+import Database from "better-sqlite3";
+import { Octokit } from "@octokit/rest";
 
 const CONFIG_FILENAME = ".command-center.jsonc";
 
@@ -144,13 +147,23 @@ function usage() {
   return `DryDock CLI
 
 Usage:
+  cc interactive
   cc init [--provider <opencode|codex|claude-code>] [--owner <org>] [--repo <name>] [--token <ghp_...>]
-  cc config show
+  cc config show [--json]
   cc config set-provider <opencode|codex|claude-code>
   cc config set-prefix <commandPrefix>
   cc config set-command <proposePlans|implement|fixRobust> <text>
   cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text>
   cc commands
+  cc features list [--limit N] [--json]
+  cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json]
+  cc features status --id <feature_id> --status <STATUS> [--json]
+  cc qa get --feature-id <id> [--json]
+  cc qa create --feature-id <id> --items "one|two|three" [--json]
+  cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json]
+  cc prs list --owner <org> --repo <name> [--json]
+  cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text> [--json]
+  cc recent list [--limit N] [--json]
 
 Notes:
   - Config file: .command-center.jsonc (created if missing)
@@ -167,6 +180,10 @@ function parseFlagValue(rest, flag) {
   const idx = rest.indexOf(flag);
   if (idx === -1) return null;
   return rest[idx + 1] ?? null;
+}
+
+function hasFlag(rest, flag) {
+  return rest.includes(flag);
 }
 
 function updateEnvLocal({ owner, repo, token }) {
@@ -187,10 +204,272 @@ function updateEnvLocal({ owner, repo, token }) {
   fs.writeFileSync(uiEnvPath, out.join("\n") + "\n", "utf8");
 }
 
-function main() {
+function loadEnvLocal() {
+  const repoRoot = findRepoRoot();
+  const uiEnvPath = path.join(repoRoot, "apps", "command-center-ui", ".env.local");
+  if (!fs.existsSync(uiEnvPath)) return {};
+  const raw = fs.readFileSync(uiEnvPath, "utf8");
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const map = {};
+  for (const line of lines) {
+    const idx = line.indexOf("=");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx);
+    const value = line.slice(idx + 1);
+    map[key] = value;
+  }
+  return map;
+}
+
+function getDb() {
+  const repoRoot = findRepoRoot();
+  const dataDir = path.join(repoRoot, ".data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, "command-center.sqlite");
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  migrate(db);
+  return db;
+}
+
+function migrate(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pr_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pr_targets_owner_repo_pr
+      ON pr_targets(owner, repo, pr_number);
+
+    CREATE TABLE IF NOT EXISTS repos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      name TEXT NOT NULL,
+      default_branch TEXT,
+      github_repo_id INTEGER,
+      settings_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_repos_owner_name
+      ON repos(owner, name);
+
+    CREATE TABLE IF NOT EXISTS features (
+      id TEXT PRIMARY KEY,
+      repo_id INTEGER,
+      title TEXT NOT NULL,
+      description_md TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_refs_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      impact TEXT NOT NULL,
+      effort TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      tags_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (repo_id) REFERENCES repos(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_features_repo_status
+      ON features(repo_id, status);
+
+    CREATE TABLE IF NOT EXISTS qa_packets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      feature_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      checklist_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (feature_id) REFERENCES features(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_qa_packets_feature
+      ON qa_packets(feature_id);
+  `);
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function newFeatureId() {
+  const iso = new Date().toISOString().slice(0, 10);
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `feat_${iso}_${rand}`;
+}
+
+function listFeatures(limit = 50) {
+  const db = getDb();
+  const stmt = db.prepare("SELECT * FROM features ORDER BY created_at DESC LIMIT ?");
+  return stmt.all(limit);
+}
+
+function createFeature(payload) {
+  const db = getDb();
+  const createdAt = nowIso();
+  const record = {
+    id: newFeatureId(),
+    repo_id: null,
+    title: payload.title,
+    description_md: payload.description_md ?? "",
+    source_type: "manual",
+    source_refs_json: "[]",
+    status: payload.status ?? "PROPOSED",
+    priority: payload.priority ?? "med",
+    impact: payload.impact ?? "med",
+    effort: payload.effort ?? "med",
+    confidence: payload.confidence ?? "med",
+    tags_json: JSON.stringify(payload.tags ?? []),
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+  const stmt = db.prepare(
+    `INSERT INTO features (
+      id, repo_id, title, description_md, source_type, source_refs_json, status,
+      priority, impact, effort, confidence, tags_json, created_at, updated_at
+    ) VALUES (
+      @id, @repo_id, @title, @description_md, @source_type, @source_refs_json, @status,
+      @priority, @impact, @effort, @confidence, @tags_json, @created_at, @updated_at
+    )`
+  );
+  stmt.run(record);
+  return record;
+}
+
+function updateFeatureStatus(id, status) {
+  const db = getDb();
+  db.prepare("UPDATE features SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
+}
+
+function getLatestQaPacket(featureId) {
+  const db = getDb();
+  const stmt = db.prepare("SELECT * FROM qa_packets WHERE feature_id = ? ORDER BY id DESC LIMIT 1");
+  return stmt.get(featureId) ?? null;
+}
+
+function createQaPacket(featureId, checklist) {
+  const db = getDb();
+  const now = nowIso();
+  const record = {
+    feature_id: featureId,
+    status: "testing",
+    checklist_json: JSON.stringify(checklist),
+    created_at: now,
+    updated_at: now,
+  };
+  const stmt = db.prepare(
+    "INSERT INTO qa_packets(feature_id, status, checklist_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+  );
+  const info = stmt.run(record.feature_id, record.status, record.checklist_json, record.created_at, record.updated_at);
+  return { id: Number(info.lastInsertRowid), ...record };
+}
+
+function updateQaPacket(id, updates) {
+  const db = getDb();
+  const existing = db.prepare("SELECT * FROM qa_packets WHERE id = ?").get(id);
+  if (!existing) return null;
+  const status = updates.status ?? existing.status;
+  const checklist_json = updates.checklist_json ?? existing.checklist_json;
+  const updated_at = nowIso();
+  db.prepare("UPDATE qa_packets SET status = ?, checklist_json = ?, updated_at = ? WHERE id = ?")
+    .run(status, checklist_json, updated_at, id);
+  return { ...existing, status, checklist_json, updated_at };
+}
+
+function listRecentTargets(limit = 10) {
+  const db = getDb();
+  const stmt = db.prepare(
+    "SELECT owner, repo, pr_number, created_at FROM pr_targets ORDER BY id DESC LIMIT ?"
+  );
+  return stmt.all(limit);
+}
+
+function savePrTarget(owner, repo, prNumber) {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO pr_targets(owner, repo, pr_number, created_at) VALUES (?, ?, ?, ?)"
+  ).run(owner, repo, prNumber, nowIso());
+}
+
+function getOctokit() {
+  const env = loadEnvLocal();
+  const token = env.GH_TOKEN || process.env.GH_TOKEN;
+  if (!token) throw new Error("Missing GH_TOKEN. Run cc init or set apps/command-center-ui/.env.local.");
+  return new Octokit({ auth: token });
+}
+
+async function listOpenPrs(owner, repo) {
+  const octokit = getOctokit();
+  const resp = await octokit.pulls.list({ owner, repo, state: "open", per_page: 20 });
+  return resp.data;
+}
+
+async function postPrComment(owner, repo, prNumber, body) {
+  const octokit = getOctokit();
+  const resp = await octokit.issues.createComment({
+    owner,
+    repo,
+    issue_number: Number(prNumber),
+    body,
+  });
+  savePrTarget(owner, repo, Number(prNumber));
+  return resp.data.html_url;
+}
+
+async function main() {
   const { command, rest } = parseArgs(process.argv.slice(2));
+  const jsonOutput = hasFlag(rest, "--json");
+
   if (!command || command === "help" || command === "--help" || command === "-h") {
     console.log(usage());
+    return;
+  }
+
+  if (command === "interactive") {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+    console.log("DryDock CLI - Interactive");
+    console.log("1) List features");
+    console.log("2) Create feature");
+    console.log("3) Create QA packet");
+    console.log("4) Post PR comment");
+    const choice = await ask("> ");
+    if (choice === "1") {
+      listFeatures().forEach((item) => console.log(`${item.id} - ${item.title} (${item.status})`));
+    } else if (choice === "2") {
+      const title = await ask("Title: ");
+      const description = await ask("Description: ");
+      const item = createFeature({ title, description_md: description });
+      console.log(`Created ${item.id}`);
+    } else if (choice === "3") {
+      const featureId = await ask("Feature ID: ");
+      const items = await ask("Checklist items (pipe separated): ");
+      const checklist = items.split("|").map((text, idx) => ({
+        id: `item_${idx + 1}`,
+        text: text.trim(),
+        status: "pending",
+        notes: "",
+        evidence: "",
+      })).filter((item) => item.text.length > 0);
+      const packet = createQaPacket(featureId, checklist);
+      updateFeatureStatus(featureId, "QA_IN_PROGRESS");
+      console.log(`Created QA ${packet.id}`);
+    } else if (choice === "4") {
+      const owner = await ask("Owner: ");
+      const repo = await ask("Repo: ");
+      const pr = await ask("PR number: ");
+      const body = await ask("Comment body: ");
+      const url = await postPrComment(owner, repo, pr, body);
+      console.log(`Posted ${url}`);
+    }
+    rl.close();
     return;
   }
 
@@ -232,7 +511,8 @@ function main() {
     if (sub === "show") {
       const agent = resolveAgentHarness(config);
       const protocol = resolveCommentProtocol(config);
-      console.log(JSON.stringify({ configPath, agentHarness: agent, commentProtocol: protocol }, null, 2));
+      const payload = { configPath, agentHarness: agent, commentProtocol: protocol };
+      console.log(jsonOutput ? JSON.stringify(payload) : JSON.stringify(payload, null, 2));
       return;
     }
 
@@ -319,7 +599,145 @@ function main() {
     return;
   }
 
+  if (command === "features") {
+    const sub = rest[0];
+    if (sub === "list") {
+      const limit = Number(parseFlagValue(rest, "--limit") ?? "50");
+      const items = listFeatures(Number.isFinite(limit) ? limit : 50);
+      console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+    if (sub === "create") {
+      const title = parseFlagValue(rest, "--title");
+      if (!title) {
+        console.error("Usage: cc features create --title <title>");
+        process.exit(1);
+      }
+      const payload = {
+        title,
+        description_md: parseFlagValue(rest, "--description"),
+        status: parseFlagValue(rest, "--status"),
+        priority: parseFlagValue(rest, "--priority"),
+        impact: parseFlagValue(rest, "--impact"),
+        effort: parseFlagValue(rest, "--effort"),
+        confidence: parseFlagValue(rest, "--confidence"),
+        tags: (parseFlagValue(rest, "--tags") || "").split(",").map((t) => t.trim()).filter(Boolean),
+      };
+      const item = createFeature(payload);
+      console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+    if (sub === "status") {
+      const id = parseFlagValue(rest, "--id");
+      const status = parseFlagValue(rest, "--status");
+      if (!id || !status) {
+        console.error("Usage: cc features status --id <feature_id> --status <STATUS>");
+        process.exit(1);
+      }
+      updateFeatureStatus(id, status);
+      console.log(jsonOutput ? JSON.stringify({ ok: true }) : JSON.stringify({ ok: true }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "qa") {
+    const sub = rest[0];
+    if (sub === "get") {
+      const featureId = parseFlagValue(rest, "--feature-id");
+      if (!featureId) {
+        console.error("--feature-id is required");
+        process.exit(1);
+      }
+      const packet = getLatestQaPacket(featureId);
+      const item = packet ? { ...packet, checklist: JSON.parse(packet.checklist_json || "[]") } : null;
+      console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+    if (sub === "create") {
+      const featureId = parseFlagValue(rest, "--feature-id");
+      const itemsRaw = parseFlagValue(rest, "--items");
+      if (!featureId || !itemsRaw) {
+        console.error("Usage: cc qa create --feature-id <id> --items \"one|two|three\"");
+        process.exit(1);
+      }
+      const checklist = itemsRaw.split("|").map((text, idx) => ({
+        id: `item_${idx + 1}`,
+        text: text.trim(),
+        status: "pending",
+        notes: "",
+        evidence: "",
+      })).filter((item) => item.text.length > 0);
+      const packet = createQaPacket(featureId, checklist);
+      updateFeatureStatus(featureId, "QA_IN_PROGRESS");
+      const item = { ...packet, checklist };
+      console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+    if (sub === "update") {
+      const id = Number(parseFlagValue(rest, "--id"));
+      if (!id) {
+        console.error("Usage: cc qa update --id <id> [--status <status>] [--checklist-json <json>]");
+        process.exit(1);
+      }
+      const status = parseFlagValue(rest, "--status");
+      const checklistJson = parseFlagValue(rest, "--checklist-json");
+      const packet = updateQaPacket(id, { status, checklist_json: checklistJson });
+      if (!packet) {
+        console.error("QA packet not found");
+        process.exit(1);
+      }
+      if (status === "failed") updateFeatureStatus(packet.feature_id, "QA_FAILED");
+      if (status === "passed") updateFeatureStatus(packet.feature_id, "QA_PASSED");
+      if (status === "testing") updateFeatureStatus(packet.feature_id, "QA_IN_PROGRESS");
+      const item = { ...packet, checklist: JSON.parse(packet.checklist_json || "[]") };
+      console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "prs") {
+    const sub = rest[0];
+    if (sub === "list") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      if (!owner || !repo) {
+        console.error("Usage: cc prs list --owner <org> --repo <name>");
+        process.exit(1);
+      }
+      const items = await listOpenPrs(owner, repo);
+      console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "pr-comment") {
+    const sub = rest[0];
+    if (sub === "post") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      const pr = parseFlagValue(rest, "--pr");
+      const body = parseFlagValue(rest, "--body");
+      if (!owner || !repo || !pr || !body) {
+        console.error("Usage: cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text>");
+        process.exit(1);
+      }
+      const url = await postPrComment(owner, repo, pr, body);
+      console.log(jsonOutput ? JSON.stringify({ url }) : JSON.stringify({ url }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "recent") {
+    const sub = rest[0];
+    if (sub === "list") {
+      const limit = Number(parseFlagValue(rest, "--limit") ?? "12");
+      const items = listRecentTargets(Number.isFinite(limit) ? limit : 12);
+      console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+  }
+
   console.log(usage());
 }
 
-main();
+void main();

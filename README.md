@@ -33,7 +33,7 @@ Note: This starter includes a local UI app and CLI for onboarding and command co
 
 
 ## Local UI + CLI
-A minimal Next.js UI and CLI live at `apps/command-center-ui`.
+A minimal Next.js UI and CLI live at `apps/command-center-ui`. The UI shells out to the CLI for all reads/writes.
 
 Quickstart:
 ```bash

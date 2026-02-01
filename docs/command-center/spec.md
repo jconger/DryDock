@@ -7,12 +7,13 @@ This document merges the provided build spec with what is currently implemented 
 ## 0) Current Implementation Snapshot (Ground Truth)
 
 - Local web UI: `apps/command-center-ui` (Next.js).
-  - Posts PR comments via GitHub API.
-  - Lists recent PR targets and open PRs.
-  - Shows active harness and command list from config.
+  - Uses the CLI for all data and write operations.
+  - Posts PR comments via CLI commands.
+  - Lists recent PR targets and open PRs via CLI.
 - CLI: `pnpm --dir apps/command-center-ui cc ...`
-  - `cc init` bootstraps `.command-center.jsonc` and writes `apps/command-center-ui/.env.local`.
-  - `cc config ...` edits harness and comment protocol settings.
+  - Single source of truth for config, features, QA packets, and PR comment actions.
+  - Web UI shells invoke CLI commands and parse JSON output.
+  - Interactive mode for quick ops: `cc interactive`.
 - Config: `.command-center.jsonc` with schema at `docs/command-center/command-center.schema.json`.
   - `commentProtocol` controls `/cc` commands.
   - `agentHarness` controls provider and prompts.
@@ -80,8 +81,8 @@ Status: Partial (steps 4-7 are manual via PR comments today).
 ## 4) System Architecture
 
 High-level components:
-1) Local UI (web).
-2) Local orchestrator service (Node/TS recommended).
+1) Local UI (web) that shells out to the CLI.
+2) Local CLI orchestrator (Node/TS).
 3) Local SQLite database.
 4) GitHub integration layer (API + webhooks/polling).
 5) Pipelines:
@@ -94,7 +95,8 @@ High-level components:
 
 Execution model:
 - Agent runs happen in GitHub Actions, triggered by PR/issue comments.
-- Local app posts those comments and watches PR updates.
+- Local UI shells out to the CLI to post comments and read status.
+- CLI supports interactive prompts for manual workflows.
 
 Status: UI + GitHub API + Actions workflow exist; orchestrator/pipelines planned.
 
@@ -113,7 +115,7 @@ Events:
 - v1: polling (planned).
 - v2: webhooks (planned).
 
-Status: Partial (PAT + API in UI + workflow).
+Status: Partial (PAT + API in CLI + workflow).
 
 ### 5.2 Agent Harness (OpenCode / Codex / Claude Code)
 - Default prefix: `/opencode`.
@@ -167,9 +169,9 @@ Global layout:
 - Sections: Morning Brief, Proposals, Implementation, QA Gate, Repo Health, Settings.
 
 Current UI (implemented):
-- PR comment control panel + command picker.
-- Recent targets list.
-- Open PR list.
+- PR comment control panel + command picker (via CLI).
+- Recent targets list (via CLI).
+- Open PR list (via CLI).
 
 Planned additions:
 - Morning Brief, Proposals, Feature detail, Implementation, QA Gate, QA Runner, Ralph tab.
@@ -193,7 +195,7 @@ DryDock commands (workflow):
 
 Notes:
 - Commands are configurable via `.command-center.jsonc`.
-- UI posts these as PR comments for auditability.
+- UI calls the CLI, which posts PR comments for auditability.
 
 Status: Implemented (configurable).
 
@@ -290,7 +292,7 @@ Per repo configuration:
 - Optional Obsidian vault path.
 
 Current:
-- Config stored in `.command-center.jsonc`.
+- Config stored in `.command-center.jsonc` and read via CLI.
 
 ## 17) Milestones (Merged)
 
