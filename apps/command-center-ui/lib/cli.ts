@@ -35,3 +35,19 @@ export async function runCliJson<T extends Record<string, unknown>>(args: string
   }
   return result.data as T;
 }
+
+export function runCliText(args: string[], stdin?: string): Promise<CliResult<string>> {
+  return new Promise((resolve) => {
+    const child = execFile("node", [scriptPath(), ...args], { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        resolve({ ok: false, error: stderr || error.message });
+        return;
+      }
+      resolve({ ok: true, data: stdout || "" });
+    });
+    if (stdin) {
+      child.stdin?.write(stdin);
+    }
+    child.stdin?.end();
+  });
+}

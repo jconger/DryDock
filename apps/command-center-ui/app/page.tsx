@@ -18,6 +18,16 @@ type ConfigResponse = {
   agentHarness?: { provider?: string; commandPrefix?: string; label?: string };
   commentProtocol?: { prefix?: string };
 };
+type RepoRecord = {
+  id: number;
+  owner: string;
+  name: string;
+  default_branch: string | null;
+  github_repo_id: number | null;
+  settings_json: string;
+  created_at: string;
+  updated_at: string;
+};
 type QaChecklistStatus = "pending" | "pass" | "fail";
 type QaChecklistItem = {
   id: string;
@@ -795,6 +805,16 @@ function RepoHealthSection() {
 
 function SettingsSection() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [repos, setRepos] = useState<RepoRecord[]>([]);
+  const [repoOwner, setRepoOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [repoBranch, setRepoBranch] = useState("");
+  const [repoProvider, setRepoProvider] = useState("opencode");
+  const [repoPrefix, setRepoPrefix] = useState("/opencode");
+  const [repoCommandPropose, setRepoCommandPropose] = useState("");
+  const [repoCommandImplement, setRepoCommandImplement] = useState("");
+  const [repoCommandFix, setRepoCommandFix] = useState("");
+  const [repoResult, setRepoResult] = useState("");
 
   useEffect(() => {
     async function load() {
@@ -804,6 +824,66 @@ function SettingsSection() {
     }
     load();
   }, []);
+
+  async function loadRepos() {
+    const r = await fetch("/api/repos");
+    const j = await r.json();
+    setRepos(j.items || []);
+  }
+
+  useEffect(() => {
+    loadRepos();
+  }, []);
+
+  async function addRepo() {
+    setRepoResult("");
+    const r = await fetch("/api/repos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner: repoOwner,
+        name: repoName,
+        default_branch: repoBranch || null,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      setRepoResult(`Error: ${j.error || "Failed to add repo"}`);
+      return;
+    }
+    setRepoOwner("");
+    setRepoName("");
+    setRepoBranch("");
+    setRepoResult("OK: Repo saved.");
+    await loadRepos();
+  }
+
+  async function setRepoAgent(owner: string, name: string) {
+    setRepoResult("");
+    const r = await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner,
+        name,
+        provider: repoProvider,
+        prefix: repoPrefix,
+        command_propose: repoCommandPropose || null,
+        command_implement: repoCommandImplement || null,
+        command_fix: repoCommandFix || null,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      setRepoResult(`Error: ${j.error || "Failed to update repo agent"}`);
+      return;
+    }
+    setRepoResult("OK: Repo agent updated.");
+    setRepoCommandPropose("");
+    setRepoCommandImplement("");
+    setRepoCommandFix("");
+    await loadRepos();
+  }
 
   return (
     <section style={{ display: "grid", gap: 12 }}>
@@ -835,6 +915,94 @@ function SettingsSection() {
           </div>
         ) : (
           <div style={{ color: "#666" }}>Loading config...</div>
+        )}
+      </div>
+
+      <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 16, display: "grid", gap: 12 }}>
+        <h3 style={{ marginTop: 0 }}>Repos</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          <input value={repoOwner} onChange={(e) => setRepoOwner(e.target.value)} placeholder="Owner" style={{ padding: 8 }} />
+          <input value={repoName} onChange={(e) => setRepoName(e.target.value)} placeholder="Repo" style={{ padding: 8 }} />
+          <input value={repoBranch} onChange={(e) => setRepoBranch(e.target.value)} placeholder="Default branch" style={{ padding: 8 }} />
+        </div>
+        <button onClick={addRepo} style={{ padding: "8px 12px", width: "fit-content" }}>
+          Add repo
+        </button>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <select value={repoProvider} onChange={(e) => setRepoProvider(e.target.value)} style={{ padding: 8 }}>
+            <option value="opencode">opencode</option>
+            <option value="codex">codex</option>
+            <option value="claude-code">claude-code</option>
+          </select>
+          <select value={repoPrefix} onChange={(e) => setRepoPrefix(e.target.value)} style={{ padding: 8 }}>
+            <option value="/opencode">/opencode</option>
+            <option value="/codex">/codex</option>
+            <option value="/claude">/claude</option>
+          </select>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <textarea
+            value={repoCommandPropose}
+            onChange={(e) => setRepoCommandPropose(e.target.value)}
+            placeholder="Override propose prompt (optional)"
+            style={{ padding: 8, minHeight: 70 }}
+          />
+          <textarea
+            value={repoCommandImplement}
+            onChange={(e) => setRepoCommandImplement(e.target.value)}
+            placeholder="Override implement prompt (optional)"
+            style={{ padding: 8, minHeight: 70 }}
+          />
+          <textarea
+            value={repoCommandFix}
+            onChange={(e) => setRepoCommandFix(e.target.value)}
+            placeholder="Override fix prompt (optional)"
+            style={{ padding: 8, minHeight: 70 }}
+          />
+        </div>
+        <div style={{ fontSize: 12, color: "#666" }}>
+          Choose provider/prefix and optional prompt overrides, then click a repo row's \"Set agent\" button to apply.
+        </div>
+
+        {repoResult && <div style={{ color: "#555" }}>{repoResult}</div>}
+
+        {repos.length === 0 ? (
+          <div style={{ color: "#666" }}>No repos configured yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {repos.map((repo) => {
+              let settings: Record<string, unknown> = {};
+              try {
+                settings = repo.settings_json ? JSON.parse(repo.settings_json) : {};
+              } catch {
+                settings = {};
+              }
+              const agent = (settings as { agentHarness?: { provider?: string; commandPrefix?: string; commands?: { proposePlans?: string; implement?: string; fixRobust?: string } } }).agentHarness || {};
+              return (
+                <div key={`${repo.owner}/${repo.name}`} style={{ border: "1px solid #eee", borderRadius: 8, padding: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{repo.owner}/{repo.name}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {repo.default_branch ? `Branch: ${repo.default_branch}` : "Branch: (default)"}{" "}
+                        {agent.provider ? `- Agent: ${agent.provider}` : ""}
+                        {agent.commandPrefix ? ` (${agent.commandPrefix})` : ""}
+                      </div>
+                      {(agent.commands?.proposePlans || agent.commands?.implement || agent.commands?.fixRobust) && (
+                        <div style={{ fontSize: 11, color: "#777", marginTop: 4 }}>
+                          Prompt overrides set
+                        </div>
+                      )}
+                    </div>
+                    <button onClick={() => setRepoAgent(repo.owner, repo.name)} style={{ padding: "6px 10px" }}>
+                      Set agent
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </section>
@@ -869,9 +1037,27 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
       const j = await r.json();
       if (!j?.agentHarness || !j?.commentProtocol) return;
       setAgentHarness(j.agentHarness);
-      setEntries(buildCommandEntries(j.agentHarness, j.commentProtocol));
     } catch {
       // Ignore config fetch failures and keep defaults.
+    }
+  }
+
+  async function loadCommands() {
+    try {
+    const params = new URLSearchParams();
+    if (owner && repo) {
+      params.set("owner", owner);
+      params.set("repo", repo);
+    }
+    const suffix = params.toString();
+    const r = await fetch(`/api/commands${suffix ? `?${suffix}` : ""}`);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (Array.isArray(j.items) && j.items.length > 0) {
+        setEntries(j.items as CommandEntry[]);
+      }
+    } catch {
+      // keep previous entries
     }
   }
 
@@ -891,10 +1077,12 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
   useEffect(() => {
     loadConfig();
     loadRecent();
+    loadCommands();
   }, []);
 
   useEffect(() => {
     loadPrs();
+    loadCommands();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, repo]);
 

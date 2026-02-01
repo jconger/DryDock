@@ -28,28 +28,37 @@ pnpm --dir apps/command-center-ui cc config set-comment qaFail "/cc qa fail:"
 ## Command list
 ```bash
 pnpm --dir apps/command-center-ui cc commands
+pnpm --dir apps/command-center-ui cc commands --owner <org> --repo <name>
 ```
 
 ## Data + workflow actions (CLI is source of truth)
 ```bash
 # Features
 pnpm --dir apps/command-center-ui cc features list --json
-printf '{"title":"Feature"}' | pnpm --dir apps/command-center-ui cc features create --json
-printf '{"id":"feat_...","status":"QA_IN_PROGRESS"}' | pnpm --dir apps/command-center-ui cc features set-status --json
+pnpm --dir apps/command-center-ui cc features create --title "Feature" --json
+pnpm --dir apps/command-center-ui cc features status --id feat_... --status QA_IN_PROGRESS --json
 
 # QA packets
 pnpm --dir apps/command-center-ui cc qa get --feature-id feat_... --json
-printf '{"feature_id":"feat_...","checklist":["Check A","Check B"]}' | pnpm --dir apps/command-center-ui cc qa create --json
-printf '{"id":1,"status":"failed","checklist":[{"id":"item_1","text":"A","status":"fail","notes":"...","evidence":""}]}' | pnpm --dir apps/command-center-ui cc qa update --json
+pnpm --dir apps/command-center-ui cc qa create --feature-id feat_... --items "Check A|Check B" --json
+pnpm --dir apps/command-center-ui cc qa update --id 1 --status failed --checklist-json '[{"id":"item_1","text":"A","status":"fail","notes":"...","evidence":""}]' --json
 
 # PR comments + targets
-printf '{"owner":"org","repo":"repo","pr_number":123,"body":"/cc qa generate"}' | pnpm --dir apps/command-center-ui cc pr-comment post --json
-pnpm --dir apps/command-center-ui cc pr-targets list --json
+pnpm --dir apps/command-center-ui cc pr-comment post --owner org --repo repo --pr 123 --body "/cc qa generate" --json
+pnpm --dir apps/command-center-ui cc recent list --json
 ```
 
 ## Interactive mode
 ```bash
 pnpm --dir apps/command-center-ui cc interactive
+```
+
+## Repo configuration
+```bash
+pnpm --dir apps/command-center-ui cc repos list --json
+pnpm --dir apps/command-center-ui cc repos add --owner <org> --name <repo> --default-branch main
+pnpm --dir apps/command-center-ui cc repos set-agent --owner <org> --name <repo> --provider codex --prefix /codex \\
+  --command-propose "propose 2 plans" --command-implement "implement per spec" --command-fix "fix robust"
 ```
 
 ## Harness providers

@@ -154,10 +154,13 @@ Usage:
   cc config set-prefix <commandPrefix>
   cc config set-command <proposePlans|implement|fixRobust> <text>
   cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text>
-  cc commands
+  cc commands [--owner <org> --repo <name>]
   cc features list [--limit N] [--json]
   cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json]
   cc features status --id <feature_id> --status <STATUS> [--json]
+  cc repos list [--json]
+  cc repos add --owner <org> --name <repo> [--default-branch main] [--github-repo-id 123] [--json]
+  cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode] [--command-propose "<text>"] [--command-implement "<text>"] [--command-fix "<text>"] [--json]
   cc qa get --feature-id <id> [--json]
   cc qa create --feature-id <id> --items "one|two|three" [--json]
   cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json]
@@ -348,6 +351,61 @@ function updateFeatureStatus(id, status) {
   db.prepare("UPDATE features SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
 }
 
+function listRepos() {
+  const db = getDb();
+  const stmt = db.prepare("SELECT * FROM repos ORDER BY created_at DESC");
+  return stmt.all();
+}
+
+function upsertRepo(payload) {
+  const db = getDb();
+  const now = nowIso();
+  const settingsJson = JSON.stringify(payload.settings || {});
+  const existing = db.prepare("SELECT id FROM repos WHERE owner = ? AND name = ?").get(payload.owner, payload.name);
+  if (existing) {
+    db.prepare(
+      "UPDATE repos SET default_branch = ?, github_repo_id = ?, settings_json = ?, updated_at = ? WHERE owner = ? AND name = ?"
+    ).run(payload.default_branch || null, payload.github_repo_id || null, settingsJson, now, payload.owner, payload.name);
+    return db.prepare("SELECT * FROM repos WHERE owner = ? AND name = ?").get(payload.owner, payload.name);
+  }
+  const stmt = db.prepare(
+    "INSERT INTO repos(owner, name, default_branch, github_repo_id, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  stmt.run(payload.owner, payload.name, payload.default_branch || null, payload.github_repo_id || null, settingsJson, now, now);
+  return db.prepare("SELECT * FROM repos WHERE owner = ? AND name = ?").get(payload.owner, payload.name);
+}
+
+function getRepo(owner, name) {
+  const db = getDb();
+  return db.prepare("SELECT * FROM repos WHERE owner = ? AND name = ?").get(owner, name) ?? null;
+}
+
+function setRepoAgent(owner, name, agentConfig) {
+  const repo = getRepo(owner, name);
+  if (!repo) return null;
+  const settings = JSON.parse(repo.settings_json || "{}");
+  settings.agentHarness = agentConfig;
+  return upsertRepo({ owner, name, default_branch: repo.default_branch, github_repo_id: repo.github_repo_id, settings });
+}
+
+function resolveRepoAgent(owner, name, baseAgent) {
+  const repo = getRepo(owner, name);
+  if (!repo) return baseAgent;
+  let settings = {};
+  try {
+    settings = JSON.parse(repo.settings_json || "{}");
+  } catch {
+    settings = {};
+  }
+  const override = settings.agentHarness || {};
+  return {
+    ...baseAgent,
+    ...override,
+    commandPrefix: override.commandPrefix || baseAgent.commandPrefix,
+    commands: { ...baseAgent.commands, ...(override.commands || {}) },
+  };
+}
+
 function getLatestQaPacket(featureId) {
   const db = getDb();
   const stmt = db.prepare("SELECT * FROM qa_packets WHERE feature_id = ? ORDER BY id DESC LIMIT 1");
@@ -440,6 +498,8 @@ async function main() {
     console.log("2) Create feature");
     console.log("3) Create QA packet");
     console.log("4) Post PR comment");
+    console.log("5) Add repo");
+    console.log("6) Set repo agent");
     const choice = await ask("> ");
     if (choice === "1") {
       listFeatures().forEach((item) => console.log(`${item.id} - ${item.title} (${item.status})`));
@@ -468,6 +528,35 @@ async function main() {
       const body = await ask("Comment body: ");
       const url = await postPrComment(owner, repo, pr, body);
       console.log(`Posted ${url}`);
+    } else if (choice === "5") {
+      const owner = await ask("Owner: ");
+      const name = await ask("Repo: ");
+      const defaultBranch = await ask("Default branch (optional): ");
+      const repo = upsertRepo({
+        owner,
+        name,
+        default_branch: defaultBranch || null,
+        github_repo_id: null,
+        settings: {},
+      });
+      console.log(`Saved ${repo.owner}/${repo.name}`);
+    } else if (choice === "6") {
+      const owner = await ask("Owner: ");
+      const name = await ask("Repo: ");
+      const provider = await ask("Provider (opencode/codex/claude-code): ");
+      const prefix = await ask("Command prefix (optional): ");
+      const base = resolveAgentHarness(loadConfig().config);
+      const agentConfig = {
+        ...base,
+        provider: provider || base.provider,
+        commandPrefix: prefix || base.commandPrefix,
+      };
+      const repo = setRepoAgent(owner, name, agentConfig);
+      if (!repo) {
+        console.log("Repo not found");
+      } else {
+        console.log(`Updated ${repo.owner}/${repo.name}`);
+      }
     }
     rl.close();
     return;
@@ -584,6 +673,9 @@ async function main() {
     const { config } = loadConfig();
     const agent = resolveAgentHarness(config);
     const protocol = resolveCommentProtocol(config);
+    const repoOwner = parseFlagValue(rest, "--owner");
+    const repoName = parseFlagValue(rest, "--repo");
+    const resolvedAgent = repoOwner && repoName ? resolveRepoAgent(repoOwner, repoName, agent) : agent;
     const lines = [
       protocol.commands.qaGenerate,
       protocol.commands.qaPass,
@@ -591,9 +683,9 @@ async function main() {
       protocol.commands.ralphRun,
       `${protocol.commands.ralphAccept} <reason>`,
       protocol.commands.finalCreate,
-      `${agent.commandPrefix} ${agent.commands.proposePlans}`,
-      `${agent.commandPrefix} ${agent.commands.implement}`,
-      `${agent.commandPrefix} ${agent.commands.fixRobust}`,
+      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.proposePlans}`,
+      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.implement}`,
+      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.fixRobust}`,
     ];
     console.log(lines.join("\n"));
     return;
@@ -636,6 +728,64 @@ async function main() {
       }
       updateFeatureStatus(id, status);
       console.log(jsonOutput ? JSON.stringify({ ok: true }) : JSON.stringify({ ok: true }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "repos") {
+    const sub = rest[0];
+    if (sub === "list") {
+      const items = listRepos();
+      console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+    if (sub === "add") {
+      const owner = parseFlagValue(rest, "--owner");
+      const name = parseFlagValue(rest, "--name");
+      if (!owner || !name) {
+        console.error("Usage: cc repos add --owner <org> --name <repo> [--default-branch main]");
+        process.exit(1);
+      }
+      const repo = upsertRepo({
+        owner,
+        name,
+        default_branch: parseFlagValue(rest, "--default-branch"),
+        github_repo_id: parseFlagValue(rest, "--github-repo-id"),
+        settings: {},
+      });
+      console.log(jsonOutput ? JSON.stringify({ item: repo }) : JSON.stringify({ item: repo }, null, 2));
+      return;
+    }
+    if (sub === "set-agent") {
+      const owner = parseFlagValue(rest, "--owner");
+      const name = parseFlagValue(rest, "--name");
+      const provider = parseFlagValue(rest, "--provider");
+      const prefix = parseFlagValue(rest, "--prefix");
+      const cmdPropose = parseFlagValue(rest, "--command-propose");
+      const cmdImplement = parseFlagValue(rest, "--command-implement");
+      const cmdFix = parseFlagValue(rest, "--command-fix");
+      if (!owner || !name) {
+        console.error("Usage: cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode]");
+        process.exit(1);
+      }
+      const base = resolveAgentHarness(loadConfig().config);
+      const agentConfig = {
+        ...base,
+        provider: provider || base.provider,
+        commandPrefix: prefix || base.commandPrefix,
+        commands: {
+          ...base.commands,
+          ...(cmdPropose ? { proposePlans: cmdPropose } : {}),
+          ...(cmdImplement ? { implement: cmdImplement } : {}),
+          ...(cmdFix ? { fixRobust: cmdFix } : {}),
+        },
+      };
+      const repo = setRepoAgent(owner, name, agentConfig);
+      if (!repo) {
+        console.error("Repo not found");
+        process.exit(1);
+      }
+      console.log(jsonOutput ? JSON.stringify({ item: repo }) : JSON.stringify({ item: repo }, null, 2));
       return;
     }
   }
