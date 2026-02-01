@@ -1,0 +1,5 @@
+.DS_Store
+.data/
+apps/command-center-ui/.env.local
+apps/command-center-ui/node_modules/
+apps/command-center-ui/.next/

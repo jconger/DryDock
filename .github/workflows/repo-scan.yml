@@ -1,0 +1,56 @@
+name: Repo Scan (Daily)
+
+on:
+  schedule:
+    - cron: "30 9 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+  actions: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update Repo Health Brief issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const title = "Repo Health Brief (Daily)";
+            const body = [
+              `## Repo Health Brief`,
+              ``,
+              `This is a placeholder. Your local app should replace this content with:`,
+              `- CI failures summary`,
+              `- dependency/security alerts summary`,
+              `- top 5-10 fix proposals (deduped)`,
+              ``,
+              `Label approved items with: \`ai:approved\``,
+            ].join("\n");
+
+            const issues = await github.rest.issues.listForRepo({
+              owner, repo, state: "open", per_page: 100
+            });
+
+            const existing = issues.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner, repo,
+                issue_number: existing.number,
+                body
+              });
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner, repo,
+              title,
+              body,
+              labels: ["ai:repo-health"]
+            });

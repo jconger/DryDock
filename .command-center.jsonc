@@ -1,0 +1,65 @@
+{
+  "$schema": "./docs/command-center/command-center.schema.json",
+  "repo": {
+    "defaultBranch": "main"
+  },
+
+  "labels": {
+    "featureApproved": "ai:approved",
+    "implementing": "ai:implementing",
+    "readyForQa": "ai:ready-for-qa",
+    "qaFailed": "ai:qa-failed",
+    "qaPassed": "ai:qa-passed",
+    "finalPr": "ai:final-pr",
+    "ralphFailed": "ai:ralph-failed",
+    "blocked": "ai:blocked"
+  },
+
+  "branches": {
+    "workingPrefix": "work/",
+    "finalPrefix": "final/"
+  },
+
+  "commands": {
+    "install": "pnpm install --frozen-lockfile",
+    "dev": "pnpm dev",
+    "lint": "pnpm lint",
+    "typecheck": "pnpm typecheck",
+    "test": "pnpm test",
+    "build": "pnpm build"
+  },
+
+  "qa": {
+    "maxChecklistItems": 25,
+    "requireCiGreenToCreateFinalPr": false,
+    "requireRalphGateBeforeFinalPr": true
+  },
+
+  "templates": {
+    "qaPacketPath": "docs/command-center/templates/qa-packet.md",
+    "fixBundlePath": "docs/command-center/templates/fix-bundle.md",
+    "ralphReportPath": "docs/command-center/templates/ralph-report.md"
+  },
+
+  "commentProtocol": {
+    "prefix": "/cc",
+    "commands": {
+      "qaGenerate": "/cc qa generate",
+      "qaPass": "/cc qa pass",
+      "qaFail": "/cc qa fail:",
+      "ralphRun": "/cc ralph run",
+      "ralphAccept": "/cc ralph accept:",
+      "finalCreate": "/cc final create"
+    }
+  },
+
+  "agentHarness": {
+    "provider": "opencode",
+    "commandPrefix": "/opencode",
+    "commands": {
+      "proposePlans": "propose 3 implementation plans: minimal, balanced, robustness-first. For each: scope, CLI + web UI impact, config changes, risks, and testing. End with a recommendation.",
+      "implement": "implement per spec in issue/PR. Update this PR. Ensure lint/typecheck/test pass. Call out assumptions and include a verification checklist.",
+      "fixRobust": "fix robust: address QA failures from latest Fix Bundle comment. Update this PR. Add/adjust tests. Include root cause and verification steps."
+    }
+  }
+}
