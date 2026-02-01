@@ -18,6 +18,22 @@ type ConfigResponse = {
   agentHarness?: { provider?: string; commandPrefix?: string; label?: string };
   commentProtocol?: { prefix?: string };
 };
+type QaChecklistStatus = "pending" | "pass" | "fail";
+type QaChecklistItem = {
+  id: string;
+  text: string;
+  status: QaChecklistStatus;
+  notes: string;
+  evidence: string;
+};
+type QaPacket = {
+  id: number;
+  feature_id: string;
+  status: "proposed" | "testing" | "failed" | "passed";
+  checklist: QaChecklistItem[];
+  created_at: string;
+  updated_at: string;
+};
 
 type SectionId = "brief" | "proposals" | "implementation" | "qa" | "repo-health" | "settings";
 
@@ -440,6 +456,15 @@ function QAGateSection({ features, onRefresh }: { features: FeatureRecord[]; onR
   const inQa = features.filter((feature) => feature.status === "QA_IN_PROGRESS");
   const failed = features.filter((feature) => feature.status === "QA_FAILED");
   const passed = features.filter((feature) => feature.status === "QA_PASSED");
+  const [selectedFeatureId, setSelectedFeatureId] = useState("");
+
+  useEffect(() => {
+    if (!selectedFeatureId && features.length > 0) {
+      setSelectedFeatureId(features[0].id);
+    }
+  }, [features, selectedFeatureId]);
+
+  const selectedFeature = features.find((feature) => feature.id === selectedFeatureId) ?? null;
 
   return (
     <section style={{ display: "grid", gap: 16 }}>
@@ -457,9 +482,39 @@ function QAGateSection({ features, onRefresh }: { features: FeatureRecord[]; onR
         <QAColumn title="Passed" items={passed} />
       </div>
 
-      <button onClick={onRefresh} style={{ width: "fit-content", padding: "8px 12px" }}>
-        Refresh QA snapshot
-      </button>
+      <div style={{ border: "1px solid #eee", borderRadius: 10, padding: 16, background: "#fff" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>QA Runner</h3>
+            <p style={{ color: "#666", marginTop: 6 }}>Run checklist pass/fail and capture evidence.</p>
+          </div>
+          <button onClick={onRefresh} style={{ padding: "8px 12px" }}>
+            Refresh QA snapshot
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+          <label style={{ fontSize: 12, color: "#666" }}>Feature</label>
+          <select
+            value={selectedFeatureId}
+            onChange={(e) => setSelectedFeatureId(e.target.value)}
+            style={{ padding: 8 }}
+          >
+            {features.length === 0 && <option value="">No features yet</option>}
+            {features.map((feature) => (
+              <option key={feature.id} value={feature.id}>
+                {feature.title} ({STATUS_LABELS[feature.status]})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {selectedFeature ? (
+          <QaRunner feature={selectedFeature} onRefresh={onRefresh} />
+        ) : (
+          <div style={{ color: "#666", marginTop: 12 }}>Select a feature to run QA.</div>
+        )}
+      </div>
     </section>
   );
 }
@@ -476,6 +531,247 @@ function QAColumn({ title, items }: { title: string; items: FeatureRecord[] }) {
             <li key={feature.id}>{feature.title}</li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: () => void }) {
+  const [packet, setPacket] = useState<QaPacket | null>(null);
+  const [checklist, setChecklist] = useState<QaChecklistItem[]>([]);
+  const [draftChecklist, setDraftChecklist] = useState("");
+  const [newItemText, setNewItemText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState("");
+
+  async function loadPacket() {
+    setLoading(true);
+    setError("");
+    setResult("");
+    try {
+      const r = await fetch(`/api/qa?feature_id=${encodeURIComponent(feature.id)}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to load QA packet");
+      if (!j.item) {
+        setPacket(null);
+        setChecklist([]);
+        return;
+      }
+      const item = j.item as QaPacket;
+      setPacket(item);
+      setChecklist(item.checklist || []);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to load QA packet";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadPacket();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feature.id]);
+
+  function updateItem(index: number, patch: Partial<QaChecklistItem>) {
+    setChecklist((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  }
+
+  async function createPacket() {
+    const items = draftChecklist
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (items.length === 0) {
+      setError("Add at least one checklist item.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResult("");
+    try {
+      const r = await fetch("/api/qa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature_id: feature.id, checklist: items }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to create QA packet");
+      setPacket(j.item as QaPacket);
+      setChecklist((j.item?.checklist as QaChecklistItem[]) ?? []);
+      setDraftChecklist("");
+      setResult("OK: QA packet created.");
+      onRefresh();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to create QA packet";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function savePacket(status?: QaPacket["status"]) {
+    if (!packet) return;
+    setLoading(true);
+    setError("");
+    setResult("");
+    try {
+      const r = await fetch("/api/qa", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: packet.id, status, checklist }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to save QA packet");
+      setPacket(j.item as QaPacket);
+      setResult("OK: QA packet saved.");
+      onRefresh();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to save QA packet";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function addItem() {
+    const text = newItemText.trim();
+    if (!text) return;
+    setChecklist((prev) => [
+      ...prev,
+      { id: `item_${Date.now()}`, text, status: "pending", notes: "", evidence: "" },
+    ]);
+    setNewItemText("");
+  }
+
+  async function markFailed() {
+    const failedItems = checklist.filter((item) => item.status === "fail");
+    if (failedItems.length === 0) {
+      setError("Mark at least one checklist item as fail.");
+      return;
+    }
+    if (failedItems.some((item) => !item.notes.trim())) {
+      setError("Add notes for each failed item before marking QA failed.");
+      return;
+    }
+    await savePacket("failed");
+  }
+
+  async function markPassed() {
+    if (checklist.length === 0) {
+      setError("Add at least one checklist item before passing QA.");
+      return;
+    }
+    if (checklist.some((item) => item.status !== "pass")) {
+      setError("All checklist items must be marked pass before QA can pass.");
+      return;
+    }
+    await savePacket("passed");
+  }
+
+  if (loading && !packet) {
+    return <div style={{ color: "#666", marginTop: 12 }}>Loading QA packet...</div>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+      {error && (
+        <div style={{ padding: 10, border: "1px solid #f2c4c4", background: "#fff4f4", borderRadius: 8 }}>
+          {error}
+        </div>
+      )}
+      {result && (
+        <div style={{ padding: 10, border: "1px solid #d7ebd7", background: "#f4fbf4", borderRadius: 8 }}>
+          {result}
+        </div>
+      )}
+
+      {!packet ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ fontWeight: 600 }}>Create QA packet</div>
+          <textarea
+            value={draftChecklist}
+            onChange={(e) => setDraftChecklist(e.target.value)}
+            placeholder={"One checklist item per line"}
+            style={{ minHeight: 120, padding: 10 }}
+          />
+          <button onClick={createPacket} disabled={loading} style={{ padding: "8px 12px", width: "fit-content" }}>
+            {loading ? "Creating..." : "Create QA Packet"}
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ fontSize: 12, color: "#666" }}>
+            Packet status: <strong>{packet.status}</strong> - {packet.updated_at}
+          </div>
+          {checklist.length === 0 ? (
+            <div style={{ color: "#666" }}>No checklist items yet.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {checklist.map((item, index) => (
+                <div key={item.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <input
+                      value={item.text}
+                      onChange={(e) => updateItem(index, { text: e.target.value })}
+                      style={{ flex: 1, padding: 8 }}
+                    />
+                    <select
+                      value={item.status}
+                      onChange={(e) => updateItem(index, { status: e.target.value as QaChecklistStatus })}
+                      style={{ padding: 8 }}
+                    >
+                      <option value="pending">Pending</option>
+                      <option value="pass">Pass</option>
+                      <option value="fail">Fail</option>
+                    </select>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                    <textarea
+                      value={item.notes}
+                      onChange={(e) => updateItem(index, { notes: e.target.value })}
+                      placeholder="Notes"
+                      style={{ padding: 8, minHeight: 60 }}
+                    />
+                    <textarea
+                      value={item.evidence}
+                      onChange={(e) => updateItem(index, { evidence: e.target.value })}
+                      placeholder="Evidence / logs"
+                      style={{ padding: 8, minHeight: 60 }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              value={newItemText}
+              onChange={(e) => setNewItemText(e.target.value)}
+              placeholder="Add checklist item"
+              style={{ padding: 8, flex: 1, minWidth: 220 }}
+            />
+            <button onClick={addItem} style={{ padding: "8px 12px" }}>Add item</button>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={() => savePacket("testing")} disabled={loading} style={{ padding: "8px 12px" }}>
+              Save progress
+            </button>
+            <button onClick={markFailed} disabled={loading} style={{ padding: "8px 12px" }}>
+              Mark feature failed
+            </button>
+            <button onClick={markPassed} disabled={loading} style={{ padding: "8px 12px" }}>
+              Mark feature passed
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

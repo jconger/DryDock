@@ -1,4 +1,4 @@
-# Command Center CLI
+# DryDock CLI
 
 The CLI bootstraps `.command-center.jsonc` and keeps the web UI in sync.
 

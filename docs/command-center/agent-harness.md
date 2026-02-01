@@ -1,6 +1,6 @@
 # Agent harness configuration
 
-Command Center supports three agent harness providers. Configure once and both the UI and CLI will use the same settings.
+DryDock supports three agent harness providers. Configure once and both the UI and CLI will use the same settings.
 
 ## Providers
 - `opencode` → `/opencode`

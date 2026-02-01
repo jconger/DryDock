@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Command Center Config",
+  "title": "DryDock Config",
   "type": "object",
   "properties": {
     "repo": {

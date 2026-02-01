@@ -1,4 +1,4 @@
-# Command Center Spec (Merged)
+# DryDock Spec (Merged)
 
 Updated: 2026-02-01
 
@@ -31,7 +31,7 @@ Status summary:
 
 ## 1) Summary
 
-Build a local app ("Command Center") that orchestrates the full pipeline:
+Build a local app ("DryDock") that orchestrates the full pipeline:
 1) Ingests notes and repo signals.
 2) Generates feature proposals and variants.
 3) Lets you approve/edit/add features in one UI.
@@ -67,7 +67,7 @@ Status: Goals align with current direction.
 Primary user: single-user local workflow.
 
 Daily flow:
-1) Open Command Center.
+1) Open DryDock.
 2) Review brief + proposals.
 3) Approve/select variants.
 4) Trigger implementation (working PR created).
@@ -183,7 +183,7 @@ Agent harness triggers (configurable):
 - `<prefix> implement ...`
 - `<prefix> fix robust ...`
 
-Command Center commands (workflow):
+DryDock commands (workflow):
 - `/cc qa generate`
 - `/cc qa pass`
 - `/cc qa fail: ...`

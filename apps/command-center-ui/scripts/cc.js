@@ -141,7 +141,7 @@ function resolveCommentProtocol(config) {
 }
 
 function usage() {
-  return `Command Center CLI
+  return `DryDock CLI
 
 Usage:
   cc init [--provider <opencode|codex|claude-code>] [--owner <org>] [--repo <name>] [--token <ghp_...>]
@@ -214,7 +214,7 @@ function main() {
     config.commentProtocol = resolveCommentProtocol(config);
     writeConfig(configPath, config);
     updateEnvLocal({ owner, repo, token });
-    console.log(`Initialized Command Center config at ${configPath}`);
+    console.log(`Initialized DryDock config at ${configPath}`);
     console.log(`Agent harness: ${provider}`);
     if (owner || repo) console.log(`Defaults: ${owner ?? ""}/${repo ?? ""}`.replace(/\/$/, ""));
     if (token) console.log("GH_TOKEN stored in apps/command-center-ui/.env.local");

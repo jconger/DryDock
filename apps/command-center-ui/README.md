@@ -1,4 +1,4 @@
-# Command Center UI (Local)
+# DryDock UI (Local)
 
 A minimal local UI that posts PR comments (your control plane) and lists open PRs.
 

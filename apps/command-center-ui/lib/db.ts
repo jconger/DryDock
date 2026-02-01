@@ -68,6 +68,19 @@ function migrate(d: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_features_repo_status
       ON features(repo_id, status);
+
+    CREATE TABLE IF NOT EXISTS qa_packets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      feature_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      checklist_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (feature_id) REFERENCES features(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_qa_packets_feature
+      ON qa_packets(feature_id);
   `);
 }
 

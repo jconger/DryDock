@@ -1,4 +1,4 @@
-# Command Center Starter Repo (Artifacts Only)
+# DryDock Starter Repo (Artifacts Only)
 
 This repo contains copy/paste artifacts to support a PR-comments-only workflow with both a web UI and a CLI:
 
