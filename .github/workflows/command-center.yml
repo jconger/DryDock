@@ -262,7 +262,8 @@ jobs:
                   `- Working PR: ${prUrl}`,
                   `- QA: passed (label ai:qa-passed)`,
                   ``,
-                  `If you want a true squash/cherry-pick final PR, do that in the local app and open the final PR from there.`,
+                  `For a true squash/cherry-pick final PR, run the local CLI:`,
+                  `\`pnpm --dir apps/command-center-ui cc final create --owner ${owner} --repo ${repo} --pr ${prNumber} --mode squash\``,
                 ].join("\n")
               });
 

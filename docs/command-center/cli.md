@@ -53,7 +53,15 @@ pnpm --dir apps/command-center-ui cc qa update --id 1 --status failed --checklis
 # PR comments + targets
 pnpm --dir apps/command-center-ui cc pr-comment post --owner org --repo repo --pr 123 --body "/cc qa generate" --json
 pnpm --dir apps/command-center-ui cc recent list --json
+
+# PR tracking + final PR creation (local)
+pnpm --dir apps/command-center-ui cc prs track --owner org --repo repo --pr 123 --type working --json
+pnpm --dir apps/command-center-ui cc prs tracked --owner org --repo repo --json
+pnpm --dir apps/command-center-ui cc final create --owner org --repo repo --pr 123 --mode squash --json
 ```
+
+Notes:
+- `cc final create` requires a clean git working tree and a local clone with `origin` configured.
 
 ## Interactive mode
 ```bash

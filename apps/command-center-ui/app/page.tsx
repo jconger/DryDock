@@ -13,6 +13,19 @@ import { FEATURE_STATUSES, type FeatureRecord, type FeatureStatus } from "@/lib/
 
 type RecentTarget = { owner: string; repo: string; pr_number: number; created_at: string; };
 type GithubPr = { number: number; title: string; html_url: string; draft: boolean; state: string; };
+type TrackedPr = {
+  owner: string;
+  repo: string;
+  pr_number: number;
+  pr_type: "working" | "final";
+  base_branch: string | null;
+  head_branch: string | null;
+  title: string | null;
+  url: string | null;
+  working_pr_number: number | null;
+  created_at: string;
+  updated_at: string;
+};
 type ConfigResponse = {
   configPath: string | null;
   agentHarness?: { provider?: string; commandPrefix?: string; label?: string };
@@ -1021,6 +1034,11 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
   const [result, setResult] = useState<string>("");
   const [recent, setRecent] = useState<RecentTarget[]>([]);
   const [prs, setPrs] = useState<GithubPr[]>([]);
+  const [tracked, setTracked] = useState<TrackedPr[]>([]);
+  const [finalMode, setFinalMode] = useState<"squash" | "cherry-pick">("squash");
+  const [finalBusy, setFinalBusy] = useState(false);
+  const [finalResult, setFinalResult] = useState<string>("");
+  const [trackResult, setTrackResult] = useState<string>("");
 
   const selectedEntry = useMemo(() => entries.find((entry) => entry.value === command), [entries, command]);
   const finalBody = useMemo(() => {
@@ -1074,14 +1092,26 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
     setPrs(j.items || []);
   }
 
+  async function loadTracked() {
+    if (!owner || !repo) {
+      setTracked([]);
+      return;
+    }
+    const r = await fetch(`/api/prs/tracked?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`);
+    const j = await r.json();
+    setTracked(j.items || []);
+  }
+
   useEffect(() => {
     loadConfig();
     loadRecent();
     loadCommands();
+    loadTracked();
   }, []);
 
   useEffect(() => {
     loadPrs();
+    loadTracked();
     loadCommands();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, repo]);
@@ -1117,6 +1147,59 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
       setResult(`Error: ${message}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function trackPr(prNumber: number, type: "working" | "final", workingPrNumber?: number) {
+    setTrackResult("");
+    try {
+      if (!owner || !repo) {
+        throw new Error("Owner and repo are required.");
+      }
+      const r = await fetch("/api/prs/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner,
+          repo,
+          pr_number: prNumber,
+          type,
+          working_pr_number: workingPrNumber ?? null,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to track PR.");
+      setTrackResult(`OK: Tracked ${type} PR #${prNumber}`);
+      await loadTracked();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setTrackResult(`Error: ${message}`);
+    }
+  }
+
+  async function createFinalPr() {
+    setFinalBusy(true);
+    setFinalResult("");
+    try {
+      const pr = Number(prNumber);
+      if (!owner || !repo || !pr || Number.isNaN(pr)) {
+        throw new Error("Owner, repo, and PR number are required.");
+      }
+      const r = await fetch("/api/final", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner, repo, pr_number: pr, mode: finalMode }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to create final PR.");
+      setFinalResult(`OK: Final PR created: ${j.url}`);
+      await loadTracked();
+      await loadPrs();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setFinalResult(`Error: ${message}`);
+    } finally {
+      setFinalBusy(false);
     }
   }
 
@@ -1178,6 +1261,25 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
         </div>
       )}
 
+      <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
+        <h4 style={{ marginTop: 0 }}>Final PR (local)</h4>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 13 }}>Mode</label>
+          <select value={finalMode} onChange={(e) => setFinalMode(e.target.value as "squash" | "cherry-pick")} style={{ padding: 8 }}>
+            <option value="squash">Squash</option>
+            <option value="cherry-pick">Cherry-pick</option>
+          </select>
+          <button disabled={finalBusy} onClick={createFinalPr} style={{ padding: "8px 12px" }}>
+            {finalBusy ? "Creating..." : "Create final PR"}
+          </button>
+        </div>
+        {finalResult && (
+          <div style={{ marginTop: 10, color: finalResult.startsWith("Error") ? "#b42318" : "#0f5132" }}>
+            {finalResult}
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div>
           <h4>Recent targets</h4>
@@ -1190,6 +1292,37 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
                   </li>
                 ))}
               </ul>
+            )}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <h4>Tracked PRs</h4>
+            <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
+              {tracked.length === 0 ? <div style={{ color: "#666" }}>No tracked PRs.</div> : (
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {tracked.map((t) => (
+                    <li key={`${t.pr_type}-${t.pr_number}`}>
+                      <code>{t.pr_type}</code>{" "}
+                      <code>#{t.pr_number}</code>{" "}
+                      {t.title ? <span style={{ color: "#333" }}>{t.title}</span> : null}
+                      {t.url ? (
+                        <div style={{ fontSize: 12 }}>
+                          <a href={t.url} target="_blank" rel="noreferrer">{t.url}</a>
+                        </div>
+                      ) : null}
+                      {t.working_pr_number ? (
+                        <div style={{ fontSize: 12, color: "#666" }}>
+                          working PR #{t.working_pr_number}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {trackResult && (
+              <div style={{ marginTop: 8, color: trackResult.startsWith("Error") ? "#b42318" : "#0f5132" }}>
+                {trackResult}
+              </div>
             )}
           </div>
         </div>
@@ -1208,6 +1341,11 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
                     <a href={p.html_url} target="_blank" rel="noreferrer">{p.title}</a>
                     <div style={{ color: "#666" }}>
                       <code>#{p.number}</code> - {p.draft ? "draft" : "ready"} - {p.state}
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      <button onClick={() => trackPr(p.number, "working")} style={{ padding: "4px 8px", fontSize: 12 }}>
+                        Track working PR
+                      </button>
                     </div>
                   </li>
                 ))}

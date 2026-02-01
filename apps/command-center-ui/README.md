@@ -43,6 +43,7 @@ pnpm --dir apps/command-center-ui cc config set-prefix /assistant
 pnpm --dir apps/command-center-ui cc config set-command proposePlans "propose 2 plans: minimal + robust"
 pnpm --dir apps/command-center-ui cc commands
 pnpm --dir apps/command-center-ui cc interactive
+pnpm --dir apps/command-center-ui cc final create --owner <org> --repo <name> --pr 123 --mode squash
 ```
 
 Add `--test` to any command to print the planned calls without making writes or API requests.

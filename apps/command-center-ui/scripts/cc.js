@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { Octokit } from "@octokit/rest";
 
@@ -165,8 +166,11 @@ Usage:
   cc qa create --feature-id <id> --items "one|two|three" [--json] [--test]
   cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json] [--test]
   cc prs list --owner <org> --repo <name> [--json] [--test]
+  cc prs track --owner <org> --repo <name> --pr <number> --type <working|final> [--working-pr <number>] [--json] [--test]
+  cc prs tracked --owner <org> --repo <name> [--type <working|final>] [--json] [--test]
   cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text> [--json] [--test]
   cc recent list [--limit N] [--json] [--test]
+  cc final create --owner <org> --repo <name> --pr <number> --mode <squash|cherry-pick> [--json] [--test]
 
 Notes:
   - Config file: .command-center.jsonc (created if missing)
@@ -305,6 +309,27 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_qa_packets_feature
       ON qa_packets(feature_id);
+
+    CREATE TABLE IF NOT EXISTS pull_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      pr_type TEXT NOT NULL,
+      base_branch TEXT,
+      head_branch TEXT,
+      title TEXT,
+      url TEXT,
+      working_pr_number INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pull_requests_unique
+      ON pull_requests(owner, repo, pr_number);
+
+    CREATE INDEX IF NOT EXISTS idx_pull_requests_type
+      ON pull_requests(owner, repo, pr_type);
   `);
 }
 
@@ -459,6 +484,64 @@ function listRecentTargets(limit = 10) {
   return stmt.all(limit);
 }
 
+function upsertTrackedPr(record) {
+  const db = getDb();
+  const now = nowIso();
+  const existing = db.prepare("SELECT id FROM pull_requests WHERE owner = ? AND repo = ? AND pr_number = ?")
+    .get(record.owner, record.repo, record.pr_number);
+  if (existing) {
+    db.prepare(
+      `UPDATE pull_requests
+       SET pr_type = ?, base_branch = ?, head_branch = ?, title = ?, url = ?, working_pr_number = ?, updated_at = ?
+       WHERE owner = ? AND repo = ? AND pr_number = ?`
+    ).run(
+      record.pr_type,
+      record.base_branch || null,
+      record.head_branch || null,
+      record.title || null,
+      record.url || null,
+      record.working_pr_number ?? null,
+      now,
+      record.owner,
+      record.repo,
+      record.pr_number
+    );
+    return db.prepare("SELECT * FROM pull_requests WHERE id = ?").get(existing.id);
+  }
+  const stmt = db.prepare(
+    `INSERT INTO pull_requests(
+      owner, repo, pr_number, pr_type, base_branch, head_branch, title, url, working_pr_number, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  stmt.run(
+    record.owner,
+    record.repo,
+    record.pr_number,
+    record.pr_type,
+    record.base_branch || null,
+    record.head_branch || null,
+    record.title || null,
+    record.url || null,
+    record.working_pr_number ?? null,
+    now,
+    now
+  );
+  return db.prepare("SELECT * FROM pull_requests WHERE owner = ? AND repo = ? AND pr_number = ?")
+    .get(record.owner, record.repo, record.pr_number);
+}
+
+function listTrackedPrs(owner, repo, type) {
+  const db = getDb();
+  if (type) {
+    return db.prepare(
+      "SELECT * FROM pull_requests WHERE owner = ? AND repo = ? AND pr_type = ? ORDER BY updated_at DESC"
+    ).all(owner, repo, type);
+  }
+  return db.prepare(
+    "SELECT * FROM pull_requests WHERE owner = ? AND repo = ? ORDER BY updated_at DESC"
+  ).all(owner, repo);
+}
+
 function savePrTarget(owner, repo, prNumber) {
   const db = getDb();
   db.prepare(
@@ -471,6 +554,25 @@ function getOctokit() {
   const token = env.GH_TOKEN || process.env.GH_TOKEN;
   if (!token) throw new Error("Missing GH_TOKEN. Run cc init or set apps/command-center-ui/.env.local.");
   return new Octokit({ auth: token });
+}
+
+function runGit(args, opts = {}) {
+  return execFileSync("git", args, {
+    cwd: opts.cwd ?? findRepoRoot(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function ensureCleanGit() {
+  const status = runGit(["status", "--porcelain"]);
+  if (status) {
+    throw new Error("Working tree is not clean. Commit or stash changes before creating a final PR.");
+  }
+}
+
+function getCurrentBranch() {
+  return runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
 }
 
 async function listOpenPrs(owner, repo) {
@@ -959,6 +1061,216 @@ async function main() {
       const items = await listOpenPrs(owner, repo);
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
       return;
+    }
+    if (sub === "track") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      const prRaw = parseFlagValue(rest, "--pr");
+      const type = parseFlagValue(rest, "--type");
+      const workingPrRaw = parseFlagValue(rest, "--working-pr");
+      if (!owner || !repo || !prRaw || !type) {
+        console.error("Usage: cc prs track --owner <org> --repo <name> --pr <number> --type <working|final> [--working-pr <number>]");
+        process.exit(1);
+      }
+      if (!["working", "final"].includes(type)) {
+        console.error("Type must be working or final.");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`github: pulls.get owner=${owner} repo=${repo} pull_number=${prRaw}`, "sqlite: upsert pull_requests"], jsonOutput);
+        return;
+      }
+      const prNumber = Number(prRaw);
+      const workingPrNumber = workingPrRaw ? Number(workingPrRaw) : null;
+      if (!prNumber || Number.isNaN(prNumber)) {
+        console.error("--pr must be a number.");
+        process.exit(1);
+      }
+      if (workingPrRaw && (!workingPrNumber || Number.isNaN(workingPrNumber))) {
+        console.error("--working-pr must be a number when provided.");
+        process.exit(1);
+      }
+      const octokit = getOctokit();
+      const prResp = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+      const pr = prResp.data;
+      const item = upsertTrackedPr({
+        owner,
+        repo,
+        pr_number: pr.number,
+        pr_type: type,
+        base_branch: pr.base?.ref,
+        head_branch: pr.head?.ref,
+        title: pr.title,
+        url: pr.html_url,
+        working_pr_number: type === "final" ? workingPrNumber : null,
+      });
+      console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+    if (sub === "tracked") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      const type = parseFlagValue(rest, "--type");
+      if (!owner || !repo) {
+        console.error("Usage: cc prs tracked --owner <org> --repo <name> [--type <working|final>]");
+        process.exit(1);
+      }
+      if (type && !["working", "final"].includes(type)) {
+        console.error("Type must be working or final.");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: SELECT * FROM pull_requests WHERE owner=${owner} repo=${repo}${type ? ` type=${type}` : ""}`], jsonOutput);
+        return;
+      }
+      const items = listTrackedPrs(owner, repo, type);
+      console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "final") {
+    const sub = rest[0];
+    if (sub === "create") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      const prRaw = parseFlagValue(rest, "--pr");
+      const mode = parseFlagValue(rest, "--mode");
+      if (!owner || !repo || !prRaw || !mode) {
+        console.error("Usage: cc final create --owner <org> --repo <name> --pr <number> --mode <squash|cherry-pick>");
+        process.exit(1);
+      }
+      if (!["squash", "cherry-pick"].includes(mode)) {
+        console.error("Mode must be squash or cherry-pick.");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([
+          `github: pulls.get owner=${owner} repo=${repo} pull_number=${prRaw}`,
+          "git: ensure clean working tree",
+          "git: fetch origin base/head",
+          `git: checkout -b final/pr-${prRaw}-<timestamp> origin/<base>`,
+          mode === "squash" ? "git: merge --squash origin/<head> && commit" : "git: cherry-pick origin/<base>..origin/<head>",
+          "git: push origin final branch",
+          "github: pulls.create final PR",
+          "github: issues.addLabels ai:final-pr, ai:qa-passed",
+          "sqlite: upsert pull_requests (working + final)",
+        ], jsonOutput);
+        return;
+      }
+      const prNumber = Number(prRaw);
+      if (!prNumber || Number.isNaN(prNumber)) {
+        console.error("--pr must be a number.");
+        process.exit(1);
+      }
+      const { config } = loadConfig();
+      const labelsConfig = config.labels ?? {};
+      const qaPassedLabel = labelsConfig.qaPassed || "ai:qa-passed";
+      const ralphFailedLabel = labelsConfig.ralphFailed || "ai:ralph-failed";
+      const requireRalph = config.qa?.requireRalphGateBeforeFinalPr ?? true;
+      const octokit = getOctokit();
+      const prResp = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+      const pr = prResp.data;
+      const labelNames = (pr.labels || []).map((label) => (typeof label === "string" ? label : label.name)).filter(Boolean);
+      if (!labelNames.includes(qaPassedLabel)) {
+        console.error(`Cannot create final PR: missing label ${qaPassedLabel}.`);
+        process.exit(1);
+      }
+      if (requireRalph && labelNames.includes(ralphFailedLabel)) {
+        console.error(`Cannot create final PR: Ralph gate failed (${ralphFailedLabel}).`);
+        process.exit(1);
+      }
+      const baseRef = pr.base?.ref;
+      const headRef = pr.head?.ref;
+      if (!baseRef || !headRef) {
+        console.error("Unable to resolve base/head branch from PR.");
+        process.exit(1);
+      }
+      const repoRoot = findRepoRoot();
+      const currentBranch = getCurrentBranch();
+      const finalBranch = `final/pr-${prNumber}-${Date.now()}`;
+      try {
+        ensureCleanGit();
+        runGit(["fetch", "origin", baseRef, headRef], { cwd: repoRoot });
+        runGit(["checkout", "-b", finalBranch, `origin/${baseRef}`], { cwd: repoRoot });
+        if (mode === "squash") {
+          runGit(["merge", "--squash", `origin/${headRef}`], { cwd: repoRoot });
+          runGit(["commit", "-m", `[FINAL] ${pr.title}`], { cwd: repoRoot });
+        } else {
+          const countRaw = runGit(["rev-list", "--count", `origin/${baseRef}..origin/${headRef}`], { cwd: repoRoot });
+          const count = Number(countRaw);
+          if (!Number.isFinite(count) || count === 0) {
+            throw new Error("No commits to cherry-pick.");
+          }
+          runGit(["cherry-pick", `origin/${baseRef}..origin/${headRef}`], { cwd: repoRoot });
+        }
+        runGit(["push", "-u", "origin", finalBranch], { cwd: repoRoot });
+        const finalPr = await octokit.pulls.create({
+          owner,
+          repo,
+          title: `[FINAL] ${pr.title}`,
+          head: finalBranch,
+          base: baseRef,
+          body: [
+            `Supersedes working PR #${prNumber}.`,
+            ``,
+            `- Working PR: ${pr.html_url}`,
+            `- QA: passed (label ${qaPassedLabel})`,
+            `- Mode: ${mode}`,
+          ].join("\n"),
+        });
+        await octokit.issues.addLabels({
+          owner,
+          repo,
+          issue_number: finalPr.data.number,
+          labels: ["ai:final-pr", qaPassedLabel],
+        });
+        upsertTrackedPr({
+          owner,
+          repo,
+          pr_number: pr.number,
+          pr_type: "working",
+          base_branch: baseRef,
+          head_branch: headRef,
+          title: pr.title,
+          url: pr.html_url,
+        });
+        upsertTrackedPr({
+          owner,
+          repo,
+          pr_number: finalPr.data.number,
+          pr_type: "final",
+          base_branch: baseRef,
+          head_branch: finalBranch,
+          title: finalPr.data.title,
+          url: finalPr.data.html_url,
+          working_pr_number: pr.number,
+        });
+        const payload = { url: finalPr.data.html_url, branch: finalBranch, pr_number: finalPr.data.number };
+        console.log(jsonOutput ? JSON.stringify(payload) : JSON.stringify(payload, null, 2));
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(message);
+        process.exitCode = 1;
+        return;
+      } finally {
+        try {
+          runGit(["cherry-pick", "--abort"], { cwd: repoRoot });
+        } catch {
+          // ignore
+        }
+        try {
+          runGit(["merge", "--abort"], { cwd: repoRoot });
+        } catch {
+          // ignore
+        }
+        try {
+          runGit(["checkout", currentBranch], { cwd: repoRoot });
+        } catch {
+          // Ignore checkout failures to avoid masking prior errors.
+        }
+      }
     }
   }
 
