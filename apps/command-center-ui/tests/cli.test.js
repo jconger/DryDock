@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(appDir, "..", "..");
 const cliPath = path.join(appDir, "scripts", "cc.js");
 const configPath = path.join(repoRoot, ".command-center.jsonc");
+const require = createRequire(import.meta.url);
 
 let configBackup = null;
 
@@ -25,6 +29,23 @@ function runCli(args, options = {}) {
     stderr: result.stderr ?? "",
     status: result.status ?? 0,
   };
+}
+
+function loadCliModule() {
+  const cliTsPath = path.join(appDir, "lib", "cli.ts");
+  const source = fs.readFileSync(cliTsPath, "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName: cliTsPath,
+  });
+  const module = { exports: {} };
+  const compiled = new Function("require", "module", "exports", "__filename", "__dirname", output.outputText);
+  compiled(require, module, module.exports, cliTsPath, path.dirname(cliTsPath));
+  return module.exports;
 }
 
 function parseJsonOutput(stdout) {
@@ -173,6 +194,35 @@ test("cc templates render ralph --test", () => {
 
 test("cc agent run --test", () => {
   assertDryRun(["agent", "run", "--mode", "propose"], ["exec:"]);
+});
+
+test("runCliJson accepts large agent output with custom maxBuffer", async () => {
+  const { runCliJson } = loadCliModule();
+  const size = 2 * 1024 * 1024;
+  assert.ok(size > 1024 * 1024);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cli-"));
+  const scriptsDir = path.join(tempRoot, "scripts");
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, "cc.js");
+  const script = `const size = ${size};
+const payload = { ok: true, exitCode: 0, stdout: "x".repeat(size), stderr: "", command: "fake" };
+process.stdout.write(JSON.stringify(payload));
+`;
+  fs.writeFileSync(scriptPath, script, "utf8");
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(tempRoot);
+    const payload = await runCliJson(
+      ["agent", "run", "--mode", "propose", "--prompt", "hello", "--json"],
+      undefined,
+      { maxBuffer: 10 * 1024 * 1024 }
+    );
+    assert.equal(payload.ok, true);
+    assert.equal(payload.stdout.length, size);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("cc qa get --test", () => {

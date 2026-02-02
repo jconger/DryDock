@@ -14,6 +14,66 @@
     "commands": { "type": "object" },
     "qa": { "type": "object" },
     "templates": { "type": "object" },
+    "watch": {
+      "type": "object",
+      "properties": {
+        "pollIntervalSeconds": { "type": "number" },
+        "debounceMs": { "type": "number" },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "path": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "mode": { "type": "string", "enum": ["mtime", "mtime+hash"] },
+              "maxFileSizeKb": { "type": "number" },
+              "parser": { "type": "object" },
+              "proposal": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "properties": {
+        "timezone": { "type": "string" },
+        "maxConcurrency": { "type": "number" },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "cron": { "type": "string" },
+              "intervalSeconds": { "type": "number" },
+              "task": { "type": "string" },
+              "args": { "type": ["object", "array", "string", "null"] },
+              "repo": {
+                "type": "object",
+                "properties": {
+                  "owner": { "type": "string" },
+                  "name": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "socketPath": { "type": "string" },
+        "pidPath": { "type": "string" },
+        "logPath": { "type": "string" },
+        "maxConcurrency": { "type": "number" }
+      }
+    },
     "commentProtocol": {
       "type": "object",
       "properties": {

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { runCliJson } from "@/lib/cli";
 
+const AGENT_MAX_BUFFER = 1024 * 1024 * 20;
+
 const AgentSchema = z.object({
   mode: z.enum(["propose", "implement", "fix"]),
   prompt: z.string().optional(),
@@ -21,7 +23,7 @@ export async function POST(req: NextRequest) {
       stdout: string;
       stderr: string;
       command: string;
-    }>(args);
+    }>(args, undefined, { maxBuffer: AGENT_MAX_BUFFER });
     return NextResponse.json(data);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed";
