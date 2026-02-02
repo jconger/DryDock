@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import crypto from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { Octokit } from "@octokit/rest";
@@ -195,6 +196,10 @@ Usage:
   cc qa get --feature-id <id> [--json] [--test]
   cc qa create --feature-id <id> --items "one|two|three" [--json] [--test]
   cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json] [--test]
+  cc watch list [--json] [--test]
+  cc watch add --id <id> --path <path> [--mode <mtime|mtime+hash>] [--enabled <true|false>] [--max-file-size-kb <number>] [--json] [--test]
+  cc watch run --id <id> [--json] [--test]
+  cc watch snapshot --id <id> [--json] [--test]
   cc prs list --owner <org> --repo <name> [--json] [--test]
   cc prs context --owner <org> --repo <name> --pr <number> [--json] [--test]
   cc prs track --owner <org> --repo <name> --pr <number> --type <working|final> [--working-pr <number>] [--json] [--test]
@@ -436,11 +441,34 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_pull_requests_type
       ON pull_requests(owner, repo, pr_type);
+
+    CREATE TABLE IF NOT EXISTS watch_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      exists INTEGER NOT NULL,
+      file_hash TEXT,
+      mtime_ms INTEGER,
+      size_bytes INTEGER,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_watch_snapshots_source
+      ON watch_snapshots(source_id);
   `);
 }
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toBool(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  return null;
 }
 
 function newFeatureId() {
@@ -612,6 +640,121 @@ function getLatestQaPacket(featureId) {
   const db = getDb();
   const stmt = db.prepare("SELECT * FROM qa_packets WHERE feature_id = ? ORDER BY id DESC LIMIT 1");
   return stmt.get(featureId) ?? null;
+}
+
+function listWatchSources(config) {
+  const sources = config?.watch?.sources;
+  if (!Array.isArray(sources)) return [];
+  return sources.filter((source) => source && typeof source === "object");
+}
+
+function upsertWatchSource(configPath, config, payload) {
+  const sources = listWatchSources(config);
+  const next = { ...payload };
+  const idx = sources.findIndex((source) => source.id === payload.id);
+  if (idx >= 0) {
+    sources[idx] = { ...sources[idx], ...next };
+  } else {
+    sources.push(next);
+  }
+  const watch = { ...(config.watch ?? {}), sources };
+  const nextConfig = { ...config, watch };
+  writeConfig(configPath, nextConfig);
+  return next;
+}
+
+function resolveWatchSourcePath(source, repoRoot) {
+  if (!source?.path) return null;
+  const raw = String(source.path);
+  if (path.isAbsolute(raw)) return raw;
+  return path.join(repoRoot, raw);
+}
+
+function getLatestWatchSnapshot(sourceId) {
+  const db = getDb();
+  const stmt = db.prepare("SELECT * FROM watch_snapshots WHERE source_id = ? ORDER BY id DESC LIMIT 1");
+  return stmt.get(sourceId) ?? null;
+}
+
+function insertWatchSnapshot(snapshot) {
+  const db = getDb();
+  const stmt = db.prepare(
+    "INSERT INTO watch_snapshots(source_id, path, mode, exists, file_hash, mtime_ms, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  const info = stmt.run(
+    snapshot.source_id,
+    snapshot.path,
+    snapshot.mode,
+    snapshot.exists ? 1 : 0,
+    snapshot.file_hash,
+    snapshot.mtime_ms,
+    snapshot.size_bytes,
+    snapshot.created_at
+  );
+  return { id: Number(info.lastInsertRowid), ...snapshot };
+}
+
+function computeFileHash(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function computeWatchSnapshot(source, repoRoot) {
+  const mode = source.mode || "mtime+hash";
+  const fullPath = resolveWatchSourcePath(source, repoRoot);
+  if (!fullPath) {
+    throw new Error("Watch source missing path.");
+  }
+  if (!fullPath.endsWith(".md")) {
+    throw new Error("Watch sources must target a .md file.");
+  }
+  if (!fs.existsSync(fullPath)) {
+    return {
+      source_id: source.id,
+      path: fullPath,
+      mode,
+      exists: false,
+      file_hash: null,
+      mtime_ms: null,
+      size_bytes: null,
+      created_at: nowIso(),
+    };
+  }
+  const stats = fs.statSync(fullPath);
+  const sizeBytes = stats.size;
+  if (source.maxFileSizeKb && Number.isFinite(source.maxFileSizeKb)) {
+    const maxBytes = Number(source.maxFileSizeKb) * 1024;
+    if (sizeBytes > maxBytes) {
+      throw new Error(`Watch source exceeds max file size (${source.maxFileSizeKb}kb).`);
+    }
+  }
+  let hash = null;
+  if (mode === "mtime+hash") {
+    const buffer = fs.readFileSync(fullPath);
+    hash = computeFileHash(buffer);
+  }
+  return {
+    source_id: source.id,
+    path: fullPath,
+    mode,
+    exists: true,
+    file_hash: hash,
+    mtime_ms: Math.round(stats.mtimeMs),
+    size_bytes: sizeBytes,
+    created_at: nowIso(),
+  };
+}
+
+function didWatchSnapshotChange(previous, next, mode) {
+  if (!previous) return true;
+  const prevExists = Boolean(previous.exists);
+  const nextExists = Boolean(next.exists);
+  if (prevExists !== nextExists) return true;
+  if (!nextExists) return false;
+  if (previous.size_bytes !== next.size_bytes) return true;
+  if (mode === "mtime") {
+    return previous.mtime_ms !== next.mtime_ms;
+  }
+  return previous.file_hash !== next.file_hash;
 }
 
 function createQaPacket(featureId, checklist) {
@@ -1466,6 +1609,113 @@ async function main() {
       if (status === "testing") updateFeatureStatus(packet.feature_id, "QA_IN_PROGRESS");
       const item = { ...packet, checklist: JSON.parse(packet.checklist_json || "[]") };
       console.log(jsonOutput ? JSON.stringify({ item }) : JSON.stringify({ item }, null, 2));
+      return;
+    }
+  }
+
+  if (command === "watch") {
+    const sub = rest[0];
+    const { configPath, config } = loadConfig();
+    if (sub === "list") {
+      if (testMode) {
+        outputDryRun(["read .command-center.jsonc watch.sources"], jsonOutput);
+        return;
+      }
+      const sources = listWatchSources(config);
+      console.log(jsonOutput ? JSON.stringify({ sources }) : JSON.stringify({ sources }, null, 2));
+      return;
+    }
+    if (sub === "add") {
+      const id = parseFlagValue(rest, "--id");
+      const sourcePath = parseFlagValue(rest, "--path");
+      const mode = parseFlagValue(rest, "--mode") || "mtime+hash";
+      const enabledRaw = parseFlagValue(rest, "--enabled");
+      const maxFileSizeRaw = parseFlagValue(rest, "--max-file-size-kb");
+      if (!id || !sourcePath) {
+        console.error("Usage: cc watch add --id <id> --path <path> [--mode <mtime|mtime+hash>] [--enabled <true|false>] [--max-file-size-kb <number>]");
+        process.exit(1);
+      }
+      if (!["mtime", "mtime+hash"].includes(mode)) {
+        console.error("Mode must be mtime or mtime+hash.");
+        process.exit(1);
+      }
+      if (!sourcePath.endsWith(".md")) {
+        console.error("Watch sources must target a .md file.");
+        process.exit(1);
+      }
+      const enabled = enabledRaw ? toBool(enabledRaw) : true;
+      if (enabled === null) {
+        console.error("--enabled must be true or false.");
+        process.exit(1);
+      }
+      const maxFileSizeKb = maxFileSizeRaw ? Number(maxFileSizeRaw) : null;
+      if (maxFileSizeRaw && (!Number.isFinite(maxFileSizeKb) || maxFileSizeKb <= 0)) {
+        console.error("--max-file-size-kb must be a positive number.");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`update ${CONFIG_FILENAME} watch.sources upsert id=${id}`], jsonOutput);
+        return;
+      }
+      const ensuredConfigPath = configPath ?? ensureConfigPath();
+      const latestConfig = configPath ? config : loadConfig().config;
+      const source = upsertWatchSource(ensuredConfigPath, latestConfig, {
+        id,
+        path: sourcePath,
+        mode,
+        enabled,
+        ...(maxFileSizeKb ? { maxFileSizeKb } : {}),
+      });
+      console.log(jsonOutput ? JSON.stringify({ source }) : JSON.stringify({ source }, null, 2));
+      return;
+    }
+    if (sub === "run") {
+      const id = parseFlagValue(rest, "--id");
+      if (!id) {
+        console.error("Usage: cc watch run --id <id>");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`scan watch source ${id}`, "sqlite: INSERT watch_snapshot"], jsonOutput);
+        return;
+      }
+      const sources = listWatchSources(config);
+      const source = sources.find((item) => item.id === id);
+      if (!source) {
+        console.error(`Watch source not found: ${id}`);
+        process.exit(1);
+      }
+      if (source.enabled === false) {
+        console.error(`Watch source disabled: ${id}`);
+        process.exit(1);
+      }
+      const repoRoot = findRepoRoot();
+      try {
+        const snapshot = computeWatchSnapshot(source, repoRoot);
+        const previous = getLatestWatchSnapshot(id);
+        const changed = didWatchSnapshotChange(previous, snapshot, snapshot.mode);
+        const stored = insertWatchSnapshot(snapshot);
+        const payload = { source, changed, snapshot: stored, previous };
+        console.log(jsonOutput ? JSON.stringify(payload) : JSON.stringify(payload, null, 2));
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(message);
+        process.exit(1);
+      }
+    }
+    if (sub === "snapshot") {
+      const id = parseFlagValue(rest, "--id");
+      if (!id) {
+        console.error("Usage: cc watch snapshot --id <id>");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: SELECT * FROM watch_snapshots WHERE source_id=${id} ORDER BY id DESC LIMIT 1`], jsonOutput);
+        return;
+      }
+      const snapshot = getLatestWatchSnapshot(id);
+      console.log(jsonOutput ? JSON.stringify({ snapshot }) : JSON.stringify({ snapshot }, null, 2));
       return;
     }
   }
