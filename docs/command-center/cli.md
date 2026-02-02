@@ -95,7 +95,7 @@ pnpm --dir apps/command-center-ui cc repos set-config --owner <org> --name <repo
 - `codex` → `/codex`
 - `claude-code` → `/claude`
 
-## Markdown watchers (planned)
+## Markdown watchers
 ```bash
 pnpm --dir apps/command-center-ui cc watch list --json
 pnpm --dir apps/command-center-ui cc watch add --id notes --path docs/notes.md --mode mtime+hash --json
@@ -105,8 +105,8 @@ pnpm --dir apps/command-center-ui cc watch snapshot --id notes --json
 
 Notes:
 - Watch sources only run on configured `.md` files.
-- `watch run` performs a one-off scan; service mode runs scans on a schedule.
-- Commands are not implemented yet.
+- `watch run` performs a one-off scan and stores a snapshot in `.data/command-center.sqlite`.
+- Service mode runs scans on a schedule (planned).
 
 ## Service + scheduler (planned)
 ```bash

@@ -91,7 +91,7 @@ test("cc shows usage without args", () => {
 });
 
 test("cc interactive --test", () => {
-  assertDryRun(["interactive"], ["prompt for interactive selections"]);
+  assertDryRun(["interactive"], ["prompt for interactive selections", "set repo config overrides"]);
 });
 
 test("cc init --test", () => {
@@ -235,6 +235,22 @@ test("cc qa create --test", () => {
 
 test("cc qa update --test", () => {
   assertDryRun(["qa", "update", "--id", "12", "--status", "failed"], ["UPDATE qa_packets"]);
+});
+
+test("cc watch list --test", () => {
+  assertDryRun(["watch", "list"], ["watch.sources"]);
+});
+
+test("cc watch add --test", () => {
+  assertDryRun(["watch", "add", "--id", "notes", "--path", "docs/notes.md"], ["watch.sources upsert id=notes"]);
+});
+
+test("cc watch run --test", () => {
+  assertDryRun(["watch", "run", "--id", "notes"], ["scan watch source notes", "INSERT watch_snapshot"]);
+});
+
+test("cc watch snapshot --test", () => {
+  assertDryRun(["watch", "snapshot", "--id", "notes"], ["watch_snapshots WHERE source_id=notes"]);
 });
 
 test("cc prs list --test", () => {
