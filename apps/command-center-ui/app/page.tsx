@@ -791,6 +791,10 @@ function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: (
         feature_id: feature.id,
         feature_title: feature.title,
       };
+      if (prOwner && prRepo) {
+        payload.owner = prOwner;
+        payload.repo = prRepo;
+      }
       if (context?.url) payload.working_pr = context.url;
       if (context?.head) payload.working_branch = context.head;
       if (context?.files?.length) payload.changed_files = context.files;
@@ -1086,6 +1090,30 @@ function SettingsSection() {
   const [repoCommandPropose, setRepoCommandPropose] = useState("");
   const [repoCommandImplement, setRepoCommandImplement] = useState("");
   const [repoCommandFix, setRepoCommandFix] = useState("");
+  const [repoCmdInstall, setRepoCmdInstall] = useState("");
+  const [repoCmdDev, setRepoCmdDev] = useState("");
+  const [repoCmdLint, setRepoCmdLint] = useState("");
+  const [repoCmdTypecheck, setRepoCmdTypecheck] = useState("");
+  const [repoCmdTest, setRepoCmdTest] = useState("");
+  const [repoCmdBuild, setRepoCmdBuild] = useState("");
+  const [repoLabelApproved, setRepoLabelApproved] = useState("");
+  const [repoLabelImplementing, setRepoLabelImplementing] = useState("");
+  const [repoLabelReadyQa, setRepoLabelReadyQa] = useState("");
+  const [repoLabelQaFailed, setRepoLabelQaFailed] = useState("");
+  const [repoLabelQaPassed, setRepoLabelQaPassed] = useState("");
+  const [repoLabelFinalPr, setRepoLabelFinalPr] = useState("");
+  const [repoLabelRalphFailed, setRepoLabelRalphFailed] = useState("");
+  const [repoLabelBlocked, setRepoLabelBlocked] = useState("");
+  const [repoWorkingPrefix, setRepoWorkingPrefix] = useState("");
+  const [repoFinalPrefix, setRepoFinalPrefix] = useState("");
+  const [repoQaMax, setRepoQaMax] = useState("");
+  const [repoQaRequireCi, setRepoQaRequireCi] = useState<"default" | "true" | "false">("default");
+  const [repoQaRequireRalph, setRepoQaRequireRalph] = useState<"default" | "true" | "false">("default");
+  const [repoTemplateQa, setRepoTemplateQa] = useState("");
+  const [repoTemplateFix, setRepoTemplateFix] = useState("");
+  const [repoTemplateRalph, setRepoTemplateRalph] = useState("");
+  const [repoObsidianPath, setRepoObsidianPath] = useState("");
+  const [repoReplaceOverrides, setRepoReplaceOverrides] = useState(false);
   const [repoResult, setRepoResult] = useState("");
 
   useEffect(() => {
@@ -1154,6 +1182,130 @@ function SettingsSection() {
     setRepoCommandPropose("");
     setRepoCommandImplement("");
     setRepoCommandFix("");
+    await loadRepos();
+  }
+
+  function buildRepoConfigPayload() {
+    const commands: Record<string, string> = {};
+    if (repoCmdInstall.trim()) commands.install = repoCmdInstall.trim();
+    if (repoCmdDev.trim()) commands.dev = repoCmdDev.trim();
+    if (repoCmdLint.trim()) commands.lint = repoCmdLint.trim();
+    if (repoCmdTypecheck.trim()) commands.typecheck = repoCmdTypecheck.trim();
+    if (repoCmdTest.trim()) commands.test = repoCmdTest.trim();
+    if (repoCmdBuild.trim()) commands.build = repoCmdBuild.trim();
+
+    const labels: Record<string, string> = {};
+    if (repoLabelApproved.trim()) labels.featureApproved = repoLabelApproved.trim();
+    if (repoLabelImplementing.trim()) labels.implementing = repoLabelImplementing.trim();
+    if (repoLabelReadyQa.trim()) labels.readyForQa = repoLabelReadyQa.trim();
+    if (repoLabelQaFailed.trim()) labels.qaFailed = repoLabelQaFailed.trim();
+    if (repoLabelQaPassed.trim()) labels.qaPassed = repoLabelQaPassed.trim();
+    if (repoLabelFinalPr.trim()) labels.finalPr = repoLabelFinalPr.trim();
+    if (repoLabelRalphFailed.trim()) labels.ralphFailed = repoLabelRalphFailed.trim();
+    if (repoLabelBlocked.trim()) labels.blocked = repoLabelBlocked.trim();
+
+    const branches: Record<string, string> = {};
+    if (repoWorkingPrefix.trim()) branches.workingPrefix = repoWorkingPrefix.trim();
+    if (repoFinalPrefix.trim()) branches.finalPrefix = repoFinalPrefix.trim();
+
+    const qa: Record<string, unknown> = {};
+    if (repoQaMax.trim()) {
+      const parsed = Number(repoQaMax);
+      if (Number.isFinite(parsed)) qa.maxChecklistItems = parsed;
+    }
+    if (repoQaRequireCi !== "default") {
+      qa.requireCiGreenToCreateFinalPr = repoQaRequireCi === "true";
+    }
+    if (repoQaRequireRalph !== "default") {
+      qa.requireRalphGateBeforeFinalPr = repoQaRequireRalph === "true";
+    }
+
+    const templates: Record<string, string> = {};
+    if (repoTemplateQa.trim()) templates.qaPacketPath = repoTemplateQa.trim();
+    if (repoTemplateFix.trim()) templates.fixBundlePath = repoTemplateFix.trim();
+    if (repoTemplateRalph.trim()) templates.ralphReportPath = repoTemplateRalph.trim();
+
+    const obsidian: Record<string, string> = {};
+    if (repoObsidianPath.trim()) obsidian.vaultPath = repoObsidianPath.trim();
+
+    const config: Record<string, unknown> = {};
+    if (Object.keys(commands).length) config.commands = commands;
+    if (Object.keys(labels).length) config.labels = labels;
+    if (Object.keys(branches).length) config.branches = branches;
+    if (Object.keys(qa).length) config.qa = qa;
+    if (Object.keys(templates).length) config.templates = templates;
+    if (Object.keys(obsidian).length) config.obsidian = obsidian;
+    return config;
+  }
+
+  async function setRepoConfig(owner: string, name: string) {
+    setRepoResult("");
+    const config = buildRepoConfigPayload();
+    if (Object.keys(config).length === 0 && !repoReplaceOverrides) {
+      setRepoResult("Error: Add at least one override field.");
+      return;
+    }
+    const r = await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner,
+        name,
+        config,
+        replace: repoReplaceOverrides,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      setRepoResult(`Error: ${j.error || "Failed to update repo config"}`);
+      return;
+    }
+    setRepoResult("OK: Repo config updated.");
+    setRepoCmdInstall("");
+    setRepoCmdDev("");
+    setRepoCmdLint("");
+    setRepoCmdTypecheck("");
+    setRepoCmdTest("");
+    setRepoCmdBuild("");
+    setRepoLabelApproved("");
+    setRepoLabelImplementing("");
+    setRepoLabelReadyQa("");
+    setRepoLabelQaFailed("");
+    setRepoLabelQaPassed("");
+    setRepoLabelFinalPr("");
+    setRepoLabelRalphFailed("");
+    setRepoLabelBlocked("");
+    setRepoWorkingPrefix("");
+    setRepoFinalPrefix("");
+    setRepoQaMax("");
+    setRepoQaRequireCi("default");
+    setRepoQaRequireRalph("default");
+    setRepoTemplateQa("");
+    setRepoTemplateFix("");
+    setRepoTemplateRalph("");
+    setRepoObsidianPath("");
+    setRepoReplaceOverrides(false);
+    await loadRepos();
+  }
+
+  async function clearRepoConfig(owner: string, name: string) {
+    setRepoResult("");
+    const r = await fetch("/api/repos", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner,
+        name,
+        config: {},
+        replace: true,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      setRepoResult(`Error: ${j.error || "Failed to clear repo config"}`);
+      return;
+    }
+    setRepoResult("OK: Repo config cleared.");
     await loadRepos();
   }
 
@@ -1237,6 +1389,76 @@ function SettingsSection() {
           Choose provider/prefix and optional prompt overrides, then click a repo row's \"Set agent\" button to apply.
         </div>
 
+        <div style={{ borderTop: "1px solid #eee", paddingTop: 12, display: "grid", gap: 12 }}>
+          <div style={{ fontWeight: 600 }}>Repo config overrides</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Commands</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input value={repoCmdInstall} onChange={(e) => setRepoCmdInstall(e.target.value)} placeholder="Install command" style={{ padding: 8 }} />
+              <input value={repoCmdDev} onChange={(e) => setRepoCmdDev(e.target.value)} placeholder="Dev command" style={{ padding: 8 }} />
+              <input value={repoCmdLint} onChange={(e) => setRepoCmdLint(e.target.value)} placeholder="Lint command" style={{ padding: 8 }} />
+              <input value={repoCmdTypecheck} onChange={(e) => setRepoCmdTypecheck(e.target.value)} placeholder="Typecheck command" style={{ padding: 8 }} />
+              <input value={repoCmdTest} onChange={(e) => setRepoCmdTest(e.target.value)} placeholder="Test command" style={{ padding: 8 }} />
+              <input value={repoCmdBuild} onChange={(e) => setRepoCmdBuild(e.target.value)} placeholder="Build command" style={{ padding: 8 }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Labels</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input value={repoLabelApproved} onChange={(e) => setRepoLabelApproved(e.target.value)} placeholder="featureApproved label" style={{ padding: 8 }} />
+              <input value={repoLabelImplementing} onChange={(e) => setRepoLabelImplementing(e.target.value)} placeholder="implementing label" style={{ padding: 8 }} />
+              <input value={repoLabelReadyQa} onChange={(e) => setRepoLabelReadyQa(e.target.value)} placeholder="readyForQa label" style={{ padding: 8 }} />
+              <input value={repoLabelQaFailed} onChange={(e) => setRepoLabelQaFailed(e.target.value)} placeholder="qaFailed label" style={{ padding: 8 }} />
+              <input value={repoLabelQaPassed} onChange={(e) => setRepoLabelQaPassed(e.target.value)} placeholder="qaPassed label" style={{ padding: 8 }} />
+              <input value={repoLabelFinalPr} onChange={(e) => setRepoLabelFinalPr(e.target.value)} placeholder="finalPr label" style={{ padding: 8 }} />
+              <input value={repoLabelRalphFailed} onChange={(e) => setRepoLabelRalphFailed(e.target.value)} placeholder="ralphFailed label" style={{ padding: 8 }} />
+              <input value={repoLabelBlocked} onChange={(e) => setRepoLabelBlocked(e.target.value)} placeholder="blocked label" style={{ padding: 8 }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Branches</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input value={repoWorkingPrefix} onChange={(e) => setRepoWorkingPrefix(e.target.value)} placeholder="Working branch prefix" style={{ padding: 8 }} />
+              <input value={repoFinalPrefix} onChange={(e) => setRepoFinalPrefix(e.target.value)} placeholder="Final branch prefix" style={{ padding: 8 }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>QA policy</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <input value={repoQaMax} onChange={(e) => setRepoQaMax(e.target.value)} placeholder="Max checklist items" style={{ padding: 8 }} />
+              <select value={repoQaRequireCi} onChange={(e) => setRepoQaRequireCi(e.target.value as "default" | "true" | "false")} style={{ padding: 8 }}>
+                <option value="default">Require CI green (default)</option>
+                <option value="true">Require CI green: true</option>
+                <option value="false">Require CI green: false</option>
+              </select>
+              <select value={repoQaRequireRalph} onChange={(e) => setRepoQaRequireRalph(e.target.value as "default" | "true" | "false")} style={{ padding: 8 }}>
+                <option value="default">Require Ralph gate (default)</option>
+                <option value="true">Require Ralph gate: true</option>
+                <option value="false">Require Ralph gate: false</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Templates</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <input value={repoTemplateQa} onChange={(e) => setRepoTemplateQa(e.target.value)} placeholder="QA packet template path" style={{ padding: 8 }} />
+              <input value={repoTemplateFix} onChange={(e) => setRepoTemplateFix(e.target.value)} placeholder="Fix bundle template path" style={{ padding: 8 }} />
+              <input value={repoTemplateRalph} onChange={(e) => setRepoTemplateRalph(e.target.value)} placeholder="Ralph report template path" style={{ padding: 8 }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Obsidian</div>
+            <input value={repoObsidianPath} onChange={(e) => setRepoObsidianPath(e.target.value)} placeholder="Vault path (optional)" style={{ padding: 8 }} />
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#666" }}>
+            <input type="checkbox" checked={repoReplaceOverrides} onChange={(e) => setRepoReplaceOverrides(e.target.checked)} />
+            Replace overrides (instead of merging)
+          </label>
+          <div style={{ fontSize: 12, color: "#666" }}>
+            Fill only the fields you want to override, then click a repo row's \"Set config\" button.
+          </div>
+        </div>
+
         {repoResult && <div style={{ color: "#555" }}>{repoResult}</div>}
 
         {repos.length === 0 ? (
@@ -1250,7 +1472,13 @@ function SettingsSection() {
               } catch {
                 settings = {};
               }
-              const agent = (settings as { agentHarness?: { provider?: string; commandPrefix?: string; commands?: { proposePlans?: string; implement?: string; fixRobust?: string } } }).agentHarness || {};
+              const parsedSettings = settings as {
+                agentHarness?: { provider?: string; commandPrefix?: string; commands?: { proposePlans?: string; implement?: string; fixRobust?: string } };
+                repoConfig?: Record<string, unknown>;
+              };
+              const agent = parsedSettings.agentHarness || {};
+              const repoConfig = parsedSettings.repoConfig || {};
+              const repoConfigKeys = Object.keys(repoConfig);
               return (
                 <div key={`${repo.owner}/${repo.name}`} style={{ border: "1px solid #eee", borderRadius: 8, padding: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
@@ -1261,15 +1489,28 @@ function SettingsSection() {
                         {agent.provider ? `- Agent: ${agent.provider}` : ""}
                         {agent.commandPrefix ? ` (${agent.commandPrefix})` : ""}
                       </div>
+                      {repoConfigKeys.length > 0 && (
+                        <div style={{ fontSize: 11, color: "#777", marginTop: 4 }}>
+                          Config overrides set
+                        </div>
+                      )}
                       {(agent.commands?.proposePlans || agent.commands?.implement || agent.commands?.fixRobust) && (
                         <div style={{ fontSize: 11, color: "#777", marginTop: 4 }}>
                           Prompt overrides set
                         </div>
                       )}
                     </div>
-                    <button onClick={() => setRepoAgent(repo.owner, repo.name)} style={{ padding: "6px 10px" }}>
-                      Set agent
-                    </button>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <button onClick={() => setRepoAgent(repo.owner, repo.name)} style={{ padding: "6px 10px" }}>
+                        Set agent
+                      </button>
+                      <button onClick={() => setRepoConfig(repo.owner, repo.name)} style={{ padding: "6px 10px" }}>
+                        Set config
+                      </button>
+                      <button onClick={() => clearRepoConfig(repo.owner, repo.name)} style={{ padding: "6px 10px" }}>
+                        Clear config
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

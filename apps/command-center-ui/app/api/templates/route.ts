@@ -4,6 +4,8 @@ import { runCliJson } from "@/lib/cli";
 
 const TemplateSchema = z.object({
   type: z.enum(["qa", "fix-bundle", "ralph"]),
+  owner: z.string().optional(),
+  repo: z.string().optional(),
   feature_id: z.string().optional(),
   feature_title: z.string().optional(),
   working_pr: z.string().optional(),
@@ -29,6 +31,9 @@ export async function POST(req: NextRequest) {
     const json = await req.json();
     const payload = TemplateSchema.parse(json);
     const args = ["templates", "render", "--type", payload.type, "--json"];
+    if (payload.owner && payload.repo) {
+      args.push("--owner", payload.owner, "--repo", payload.repo);
+    }
     if (payload.feature_id) {
       args.push("--feature-id", payload.feature_id);
     }

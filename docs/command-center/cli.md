@@ -53,6 +53,7 @@ pnpm --dir apps/command-center-ui cc qa update --id 1 --status failed --checklis
 
 # Templates
 pnpm --dir apps/command-center-ui cc templates render --type qa --feature-id feat_... --json
+pnpm --dir apps/command-center-ui cc templates render --type qa --owner org --repo repo --feature-id feat_... --json
 pnpm --dir apps/command-center-ui cc templates render --type fix-bundle --feature-id feat_... --data-json '{"failed_checks":["Check A failed"],"evidence":"..." }' --json
 pnpm --dir apps/command-center-ui cc templates render --type ralph --feature-id feat_... --json
 
@@ -86,6 +87,7 @@ pnpm --dir apps/command-center-ui cc repos list --json
 pnpm --dir apps/command-center-ui cc repos add --owner <org> --name <repo> --default-branch main
 pnpm --dir apps/command-center-ui cc repos set-agent --owner <org> --name <repo> --provider codex --prefix /codex \\
   --command-propose "propose 2 plans" --command-implement "implement per spec" --command-fix "fix robust"
+pnpm --dir apps/command-center-ui cc repos set-config --owner <org> --name <repo> --config-json '{"commands":{"test":"pnpm test"}}'
 ```
 
 ## Harness providers

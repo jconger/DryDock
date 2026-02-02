@@ -152,6 +152,13 @@ test("cc repos set-agent --test", () => {
   );
 });
 
+test("cc repos set-config --test", () => {
+  assertDryRun(
+    ["repos", "set-config", "--owner", "acme", "--name", "ship", "--config-json", "{\"commands\":{\"test\":\"pnpm test\"}}"],
+    ["config overrides"]
+  );
+});
+
 test("cc templates render qa --test", () => {
   assertDryRun(["templates", "render", "--type", "qa"], ["read template"]);
 });

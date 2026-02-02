@@ -183,14 +183,15 @@ Usage:
   cc config set-command <proposePlans|implement|fixRobust> <text> [--test]
   cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text> [--test]
   cc commands [--owner <org> --repo <name>] [--include-agent] [--test]
-  cc agent run --mode <propose|implement|fix> [--prompt <text>] [--context <text>] [--json] [--test]
+  cc agent run --mode <propose|implement|fix> [--owner <org> --repo <name>] [--prompt <text>] [--context <text>] [--json] [--test]
   cc features list [--limit N] [--json] [--test]
   cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json] [--test]
   cc features status --id <feature_id> --status <STATUS> [--json] [--test]
   cc repos list [--json] [--test]
   cc repos add --owner <org> --name <repo> [--default-branch main] [--github-repo-id 123] [--json] [--test]
   cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode] [--command-propose "<text>"] [--command-implement "<text>"] [--command-fix "<text>"] [--json] [--test]
-  cc templates render --type <qa|fix-bundle|ralph> [--feature-id <id>] [--data-json <json>] [--json] [--test]
+  cc repos set-config --owner <org> --name <repo> --config-json <json> [--replace] [--json] [--test]
+  cc templates render --type <qa|fix-bundle|ralph> [--owner <org> --repo <name>] [--feature-id <id>] [--data-json <json>] [--json] [--test]
   cc qa get --feature-id <id> [--json] [--test]
   cc qa create --feature-id <id> --items "one|two|three" [--json] [--test]
   cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json] [--test]
@@ -548,7 +549,63 @@ function resolveRepoAgent(owner, name, baseAgent) {
     ...override,
     commandPrefix: override.commandPrefix || baseAgent.commandPrefix,
     commands: { ...baseAgent.commands, ...(override.commands || {}) },
+    exec: { ...baseAgent.exec, ...(override.exec || {}) },
   };
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeDeep(base, overrides) {
+  const output = { ...(base || {}) };
+  if (!isPlainObject(overrides)) return output;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (isPlainObject(value) && isPlainObject(output[key])) {
+      output[key] = mergeDeep(output[key], value);
+    } else {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+function resolveRepoConfig(owner, name, baseConfig) {
+  const repo = getRepo(owner, name);
+  if (!repo) return baseConfig;
+  let settings = {};
+  try {
+    settings = JSON.parse(repo.settings_json || "{}");
+  } catch {
+    settings = {};
+  }
+  const overrides = settings.repoConfig || {};
+  const merged = mergeDeep(baseConfig, overrides);
+  return {
+    ...merged,
+    commands: resolveRepoCommands(merged),
+    templates: resolveTemplates(merged),
+  };
+}
+
+function setRepoConfig(owner, name, repoConfig, replace = false) {
+  const repo = getRepo(owner, name);
+  if (!repo) return null;
+  let settings = {};
+  try {
+    settings = JSON.parse(repo.settings_json || "{}");
+  } catch {
+    settings = {};
+  }
+  const current = settings.repoConfig || {};
+  settings.repoConfig = replace ? (repoConfig || {}) : mergeDeep(current, repoConfig || {});
+  return upsertRepo({
+    owner,
+    name,
+    default_branch: repo.default_branch,
+    github_repo_id: repo.github_repo_id,
+    settings,
+  });
 }
 
 function getLatestQaPacket(featureId) {
@@ -1150,6 +1207,37 @@ async function main() {
       console.log(jsonOutput ? JSON.stringify({ item: repo }) : JSON.stringify({ item: repo }, null, 2));
       return;
     }
+    if (sub === "set-config") {
+      const owner = parseFlagValue(rest, "--owner");
+      const name = parseFlagValue(rest, "--name");
+      const configJson = parseFlagValue(rest, "--config-json");
+      const replace = hasFlag(rest, "--replace");
+      if (!owner || !name || !configJson) {
+        console.error("Usage: cc repos set-config --owner <org> --name <repo> --config-json <json> [--replace]");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([`sqlite: UPDATE repo ${owner}/${name} config overrides`], jsonOutput);
+        return;
+      }
+      let repoConfig = {};
+      try {
+        const parsed = JSON.parse(configJson);
+        if (parsed && typeof parsed === "object") {
+          repoConfig = parsed;
+        }
+      } catch {
+        console.error("Invalid --config-json payload.");
+        process.exit(1);
+      }
+      const repo = setRepoConfig(owner, name, repoConfig, replace);
+      if (!repo) {
+        console.error("Repo not found");
+        process.exit(1);
+      }
+      console.log(jsonOutput ? JSON.stringify({ item: repo }) : JSON.stringify({ item: repo }, null, 2));
+      return;
+    }
   }
 
   if (command === "agent") {
@@ -1160,12 +1248,15 @@ async function main() {
         console.error("Usage: cc agent run --mode <propose|implement|fix> [--prompt <text>] [--context <text>]");
         process.exit(1);
       }
+      const owner = parseFlagValue(rest, "--owner");
+      const repoName = parseFlagValue(rest, "--repo");
       const promptOverride = parseFlagValue(rest, "--prompt");
       const context = parseFlagValue(rest, "--context");
       const stdinAllowed = !promptOverride && !context && !process.stdin.isTTY;
       const stdinValue = stdinAllowed ? readStdin() : "";
       const { config } = loadConfig();
-      const agent = resolveAgentHarness(config);
+      const baseAgent = resolveAgentHarness(config);
+      const agent = owner && repoName ? resolveRepoAgent(owner, repoName, baseAgent) : baseAgent;
       const repoRoot = findRepoRoot();
       const prompt = resolvePrompt(mode, agent, promptOverride || undefined, context || undefined) || stdinValue.trim();
       if (!prompt) {
@@ -1216,6 +1307,8 @@ async function main() {
         console.error("Usage: cc templates render --type <qa|fix-bundle|ralph> [--feature-id <id>] [--data-json <json>]");
         process.exit(1);
       }
+      const owner = parseFlagValue(rest, "--owner");
+      const repoName = parseFlagValue(rest, "--repo");
       const featureId = parseFlagValue(rest, "--feature-id");
       const dataJson = parseFlagValue(rest, "--data-json");
       if (testMode) {
@@ -1240,9 +1333,11 @@ async function main() {
         }
       }
       const { config } = loadConfig();
-      const templates = resolveTemplates(config);
-      const commands = resolveRepoCommands(config);
-      const agent = resolveAgentHarness(config);
+      const baseAgent = resolveAgentHarness(config);
+      const resolvedConfig = owner && repoName ? resolveRepoConfig(owner, repoName, config) : config;
+      const templates = resolveTemplates(resolvedConfig);
+      const commands = resolveRepoCommands(resolvedConfig);
+      const agent = owner && repoName ? resolveRepoAgent(owner, repoName, baseAgent) : baseAgent;
       const templatePath = type === "qa"
         ? templates.qaPacketPath
         : type === "fix-bundle"
@@ -1510,10 +1605,13 @@ async function main() {
         process.exit(1);
       }
       const { config } = loadConfig();
-      const labelsConfig = config.labels ?? {};
+      const resolvedConfig = resolveRepoConfig(owner, repo, config);
+      const labelsConfig = resolvedConfig.labels ?? {};
+      const branchesConfig = resolvedConfig.branches ?? {};
       const qaPassedLabel = labelsConfig.qaPassed || "ai:qa-passed";
       const ralphFailedLabel = labelsConfig.ralphFailed || "ai:ralph-failed";
-      const requireRalph = config.qa?.requireRalphGateBeforeFinalPr ?? true;
+      const finalPrLabel = labelsConfig.finalPr || "ai:final-pr";
+      const requireRalph = resolvedConfig.qa?.requireRalphGateBeforeFinalPr ?? true;
       const octokit = getOctokit();
       const prResp = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
       const pr = prResp.data;
@@ -1534,7 +1632,9 @@ async function main() {
       }
       const repoRoot = findRepoRoot();
       const currentBranch = getCurrentBranch();
-      const finalBranch = `final/pr-${prNumber}-${Date.now()}`;
+      const finalPrefix = branchesConfig.finalPrefix || "final/";
+      const prefixNormalized = finalPrefix.endsWith("/") ? finalPrefix : `${finalPrefix}/`;
+      const finalBranch = `${prefixNormalized}pr-${prNumber}-${Date.now()}`;
       try {
         ensureCleanGit();
         runGit(["fetch", "origin", baseRef, headRef], { cwd: repoRoot });
@@ -1569,7 +1669,7 @@ async function main() {
           owner,
           repo,
           issue_number: finalPr.data.number,
-          labels: ["ai:final-pr", qaPassedLabel],
+          labels: [finalPrLabel, qaPassedLabel],
         });
         upsertTrackedPr({
           owner,
