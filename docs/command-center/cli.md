@@ -94,3 +94,33 @@ pnpm --dir apps/command-center-ui cc repos set-config --owner <org> --name <repo
 - `opencode` → `/opencode`
 - `codex` → `/codex`
 - `claude-code` → `/claude`
+
+## Markdown watchers (planned)
+```bash
+pnpm --dir apps/command-center-ui cc watch list --json
+pnpm --dir apps/command-center-ui cc watch add --id notes --path docs/notes.md --mode mtime+hash --json
+pnpm --dir apps/command-center-ui cc watch run --id notes --json
+pnpm --dir apps/command-center-ui cc watch snapshot --id notes --json
+```
+
+Notes:
+- Watch sources only run on configured `.md` files.
+- `watch run` performs a one-off scan; service mode runs scans on a schedule.
+- Commands are not implemented yet.
+
+## Service + scheduler (planned)
+```bash
+pnpm --dir apps/command-center-ui cc service start
+pnpm --dir apps/command-center-ui cc service status --json
+pnpm --dir apps/command-center-ui cc service stop
+pnpm --dir apps/command-center-ui cc service pipe < tasks.jsonl
+
+pnpm --dir apps/command-center-ui cc schedule list --json
+pnpm --dir apps/command-center-ui cc schedule add --id daily-brief --cron "0 8 * * *" --task brief.generate --json
+pnpm --dir apps/command-center-ui cc schedule run --id daily-brief --json
+```
+
+Notes:
+- Service mode is local-only and writes job state to the SQLite DB.
+- `service pipe` accepts JSON lines and enqueues jobs for processing.
+- Commands are not implemented yet.

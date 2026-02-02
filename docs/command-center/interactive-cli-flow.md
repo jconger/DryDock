@@ -1,5 +1,7 @@
 # DryDock Interactive CLI Flow
 
+Status: Options 7-10 are planned and not implemented in the CLI yet.
+
 ```mermaid
 flowchart TD
   A[Start: cc interactive] --> B{--test flag?}
@@ -32,4 +34,19 @@ flowchart TD
   P --> Q[Resolve base agent config]
   Q --> R[Set repo agent override]
   R --> Z
+
+  E -->|7| S[Prompt watch ID + path + mode (planned)]
+  S --> T[Upsert watch source (planned)]
+  T --> Z
+
+  E -->|8| U[Prompt watch ID (planned)]
+  U --> V[Run watch scan (planned)]
+  V --> Z
+
+  E -->|9| W[Prompt schedule ID + cron/task (planned)]
+  W --> X[Upsert schedule job (planned)]
+  X --> Z
+
+  E -->|10| Y[Service control: start/stop/status (planned)]
+  Y --> Z
 ```
