@@ -19,6 +19,10 @@ This repository supports agent-assisted development. Follow these rules strictly
 
 If any of these fail after your changes, explain why and fix it.
 
+## CLI testing expectations
+- When changing the CLI (`apps/command-center-ui/scripts/cc.js` or `apps/command-center-ui/lib/cli.ts`), always run `pnpm test`.
+- Add or update CLI tests in `apps/command-center-ui/tests/cli.test.js` to cover the new or changed behavior.
+
 ## Branch + PR conventions
 - Working branches: `work/<feature_id>-<slug>` (draft PRs ok)
 - Final branches: `final/<feature_id>-<slug>` (clean PR only after QA passes)

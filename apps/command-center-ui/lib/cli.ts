@@ -1,15 +1,19 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 
+const DEFAULT_MAX_BUFFER = 1024 * 1024;
+
 export type CliResult<T> = { ok: true; data: T } | { ok: false; error: string };
+export type RunCliOptions = { maxBuffer?: number };
 
 function scriptPath() {
   return path.join(process.cwd(), "scripts", "cc.js");
 }
 
-export function runCli<T>(args: string[], stdin?: string): Promise<CliResult<T>> {
+export function runCli<T>(args: string[], stdin?: string, options?: RunCliOptions): Promise<CliResult<T>> {
   return new Promise((resolve) => {
-    const child = execFile("node", [scriptPath(), ...args], { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const maxBuffer = options?.maxBuffer ?? DEFAULT_MAX_BUFFER;
+    const child = execFile("node", [scriptPath(), ...args], { maxBuffer }, (error, stdout, stderr) => {
       if (error) {
         resolve({ ok: false, error: stderr || error.message });
         return;
@@ -28,17 +32,22 @@ export function runCli<T>(args: string[], stdin?: string): Promise<CliResult<T>>
   });
 }
 
-export async function runCliJson<T extends Record<string, unknown>>(args: string[], stdin?: string) {
-  const result = await runCli<T>(args, stdin);
+export async function runCliJson<T extends Record<string, unknown>>(
+  args: string[],
+  stdin?: string,
+  options?: RunCliOptions
+) {
+  const result = await runCli<T>(args, stdin, options);
   if (!result.ok) {
     throw new Error(result.error);
   }
   return result.data as T;
 }
 
-export function runCliText(args: string[], stdin?: string): Promise<CliResult<string>> {
+export function runCliText(args: string[], stdin?: string, options?: RunCliOptions): Promise<CliResult<string>> {
   return new Promise((resolve) => {
-    const child = execFile("node", [scriptPath(), ...args], { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const maxBuffer = options?.maxBuffer ?? DEFAULT_MAX_BUFFER;
+    const child = execFile("node", [scriptPath(), ...args], { maxBuffer }, (error, stdout, stderr) => {
       if (error) {
         resolve({ ok: false, error: stderr || error.message });
         return;

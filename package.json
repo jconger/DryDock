@@ -1,0 +1,11 @@
+{
+  "name": "command-center-full-starter-repo",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir apps/command-center-ui dev",
+    "build": "pnpm --dir apps/command-center-ui build",
+    "lint": "pnpm --dir apps/command-center-ui lint",
+    "typecheck": "pnpm --dir apps/command-center-ui typecheck",
+    "test": "pnpm --dir apps/command-center-ui test"
+  }
+}
