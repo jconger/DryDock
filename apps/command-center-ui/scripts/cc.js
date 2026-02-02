@@ -836,7 +836,13 @@ async function main() {
 
   if (command === "interactive") {
     if (testMode) {
-      outputDryRun(["prompt for interactive selections"], jsonOutput);
+      outputDryRun(
+        [
+          "prompt for interactive selections",
+          "menu: list features, create feature, create QA packet, post PR comment, add repo, set repo agent, set repo config overrides",
+        ],
+        jsonOutput
+      );
       return;
     }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -848,6 +854,7 @@ async function main() {
     console.log("4) Post PR comment");
     console.log("5) Add repo");
     console.log("6) Set repo agent");
+    console.log("7) Set repo config overrides");
     const choice = await ask("> ");
     if (choice === "1") {
       listFeatures().forEach((item) => console.log(`${item.id} - ${item.title} (${item.status})`));
@@ -904,6 +911,37 @@ async function main() {
         console.log("Repo not found");
       } else {
         console.log(`Updated ${repo.owner}/${repo.name}`);
+      }
+    } else if (choice === "7") {
+      const owner = await ask("Owner: ");
+      const name = await ask("Repo: ");
+      const configJson = await ask("Config JSON: ");
+      const replaceRaw = await ask("Replace overrides? (y/N): ");
+      if (!owner || !name || !configJson.trim()) {
+        console.log("Owner, repo, and config JSON are required.");
+        rl.close();
+        return;
+      }
+      let repoConfig = {};
+      try {
+        const parsed = JSON.parse(configJson);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          console.log("Config JSON must be an object.");
+          rl.close();
+          return;
+        }
+        repoConfig = parsed;
+      } catch {
+        console.log("Invalid config JSON.");
+        rl.close();
+        return;
+      }
+      const replace = replaceRaw.trim().toLowerCase().startsWith("y");
+      const repo = setRepoConfig(owner, name, repoConfig, replace);
+      if (!repo) {
+        console.log("Repo not found");
+      } else {
+        console.log(`Updated config for ${repo.owner}/${repo.name}`);
       }
     }
     rl.close();

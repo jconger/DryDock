@@ -91,7 +91,7 @@ test("cc shows usage without args", () => {
 });
 
 test("cc interactive --test", () => {
-  assertDryRun(["interactive"], ["prompt for interactive selections"]);
+  assertDryRun(["interactive"], ["prompt for interactive selections", "set repo config overrides"]);
 });
 
 test("cc init --test", () => {

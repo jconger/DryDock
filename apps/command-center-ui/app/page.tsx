@@ -1113,6 +1113,17 @@ function SettingsSection() {
   const [repoTemplateFix, setRepoTemplateFix] = useState("");
   const [repoTemplateRalph, setRepoTemplateRalph] = useState("");
   const [repoObsidianPath, setRepoObsidianPath] = useState("");
+  const [repoWatchPollInterval, setRepoWatchPollInterval] = useState("");
+  const [repoWatchDebounce, setRepoWatchDebounce] = useState("");
+  const [repoWatchSourcesJson, setRepoWatchSourcesJson] = useState("");
+  const [repoSchedulerTimezone, setRepoSchedulerTimezone] = useState("");
+  const [repoSchedulerMaxConcurrency, setRepoSchedulerMaxConcurrency] = useState("");
+  const [repoSchedulerJobsJson, setRepoSchedulerJobsJson] = useState("");
+  const [repoServiceEnabled, setRepoServiceEnabled] = useState<"default" | "true" | "false">("default");
+  const [repoServiceSocketPath, setRepoServiceSocketPath] = useState("");
+  const [repoServicePidPath, setRepoServicePidPath] = useState("");
+  const [repoServiceLogPath, setRepoServiceLogPath] = useState("");
+  const [repoServiceMaxConcurrency, setRepoServiceMaxConcurrency] = useState("");
   const [repoReplaceOverrides, setRepoReplaceOverrides] = useState(false);
   const [repoResult, setRepoResult] = useState("");
 
@@ -1185,6 +1196,19 @@ function SettingsSection() {
     await loadRepos();
   }
 
+  function parseJsonArray(value: string, label: string) {
+    if (!value.trim()) return { ok: true, value: null as unknown[] | null };
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) {
+        return { ok: false, error: `${label} must be a JSON array.` };
+      }
+      return { ok: true, value: parsed };
+    } catch {
+      return { ok: false, error: `Invalid ${label} JSON.` };
+    }
+  }
+
   function buildRepoConfigPayload() {
     const commands: Record<string, string> = {};
     if (repoCmdInstall.trim()) commands.install = repoCmdInstall.trim();
@@ -1228,6 +1252,45 @@ function SettingsSection() {
     const obsidian: Record<string, string> = {};
     if (repoObsidianPath.trim()) obsidian.vaultPath = repoObsidianPath.trim();
 
+    const watch: Record<string, unknown> = {};
+    if (repoWatchPollInterval.trim()) {
+      const parsed = Number(repoWatchPollInterval);
+      if (Number.isFinite(parsed)) watch.pollIntervalSeconds = parsed;
+    }
+    if (repoWatchDebounce.trim()) {
+      const parsed = Number(repoWatchDebounce);
+      if (Number.isFinite(parsed)) watch.debounceMs = parsed;
+    }
+    if (repoWatchSourcesJson.trim()) {
+      const parsed = parseJsonArray(repoWatchSourcesJson, "watch sources");
+      if (!parsed.ok) return { config: {}, error: parsed.error };
+      if (parsed.value) watch.sources = parsed.value;
+    }
+
+    const scheduler: Record<string, unknown> = {};
+    if (repoSchedulerTimezone.trim()) scheduler.timezone = repoSchedulerTimezone.trim();
+    if (repoSchedulerMaxConcurrency.trim()) {
+      const parsed = Number(repoSchedulerMaxConcurrency);
+      if (Number.isFinite(parsed)) scheduler.maxConcurrency = parsed;
+    }
+    if (repoSchedulerJobsJson.trim()) {
+      const parsed = parseJsonArray(repoSchedulerJobsJson, "scheduler jobs");
+      if (!parsed.ok) return { config: {}, error: parsed.error };
+      if (parsed.value) scheduler.jobs = parsed.value;
+    }
+
+    const service: Record<string, unknown> = {};
+    if (repoServiceEnabled !== "default") {
+      service.enabled = repoServiceEnabled === "true";
+    }
+    if (repoServiceSocketPath.trim()) service.socketPath = repoServiceSocketPath.trim();
+    if (repoServicePidPath.trim()) service.pidPath = repoServicePidPath.trim();
+    if (repoServiceLogPath.trim()) service.logPath = repoServiceLogPath.trim();
+    if (repoServiceMaxConcurrency.trim()) {
+      const parsed = Number(repoServiceMaxConcurrency);
+      if (Number.isFinite(parsed)) service.maxConcurrency = parsed;
+    }
+
     const config: Record<string, unknown> = {};
     if (Object.keys(commands).length) config.commands = commands;
     if (Object.keys(labels).length) config.labels = labels;
@@ -1235,12 +1298,19 @@ function SettingsSection() {
     if (Object.keys(qa).length) config.qa = qa;
     if (Object.keys(templates).length) config.templates = templates;
     if (Object.keys(obsidian).length) config.obsidian = obsidian;
-    return config;
+    if (Object.keys(watch).length) config.watch = watch;
+    if (Object.keys(scheduler).length) config.scheduler = scheduler;
+    if (Object.keys(service).length) config.service = service;
+    return { config, error: "" };
   }
 
   async function setRepoConfig(owner: string, name: string) {
     setRepoResult("");
-    const config = buildRepoConfigPayload();
+    const { config, error } = buildRepoConfigPayload();
+    if (error) {
+      setRepoResult(`Error: ${error}`);
+      return;
+    }
     if (Object.keys(config).length === 0 && !repoReplaceOverrides) {
       setRepoResult("Error: Add at least one override field.");
       return;
@@ -1284,6 +1354,17 @@ function SettingsSection() {
     setRepoTemplateFix("");
     setRepoTemplateRalph("");
     setRepoObsidianPath("");
+    setRepoWatchPollInterval("");
+    setRepoWatchDebounce("");
+    setRepoWatchSourcesJson("");
+    setRepoSchedulerTimezone("");
+    setRepoSchedulerMaxConcurrency("");
+    setRepoSchedulerJobsJson("");
+    setRepoServiceEnabled("default");
+    setRepoServiceSocketPath("");
+    setRepoServicePidPath("");
+    setRepoServiceLogPath("");
+    setRepoServiceMaxConcurrency("");
     setRepoReplaceOverrides(false);
     await loadRepos();
   }
@@ -1439,7 +1520,7 @@ function SettingsSection() {
             </div>
           </div>
           <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, color: "#666" }}>Templates</div>
+            <div style={{ fontSize: 12, color: "#666" }}>Templates + output paths</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
               <input value={repoTemplateQa} onChange={(e) => setRepoTemplateQa(e.target.value)} placeholder="QA packet template path" style={{ padding: 8 }} />
               <input value={repoTemplateFix} onChange={(e) => setRepoTemplateFix(e.target.value)} placeholder="Fix bundle template path" style={{ padding: 8 }} />
@@ -1449,6 +1530,96 @@ function SettingsSection() {
           <div style={{ display: "grid", gap: 8 }}>
             <div style={{ fontSize: 12, color: "#666" }}>Obsidian</div>
             <input value={repoObsidianPath} onChange={(e) => setRepoObsidianPath(e.target.value)} placeholder="Vault path (optional)" style={{ padding: 8 }} />
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Markdown watch sources</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input
+                value={repoWatchPollInterval}
+                onChange={(e) => setRepoWatchPollInterval(e.target.value)}
+                placeholder="Poll interval seconds"
+                style={{ padding: 8 }}
+              />
+              <input
+                value={repoWatchDebounce}
+                onChange={(e) => setRepoWatchDebounce(e.target.value)}
+                placeholder="Debounce ms"
+                style={{ padding: 8 }}
+              />
+            </div>
+            <textarea
+              value={repoWatchSourcesJson}
+              onChange={(e) => setRepoWatchSourcesJson(e.target.value)}
+              placeholder='[{ "id": "notes", "path": "docs/notes.md", "mode": "mtime+hash", "enabled": true }]'
+              style={{ padding: 8, minHeight: 90 }}
+            />
+            <div style={{ fontSize: 11, color: "#777" }}>
+              JSON array of watch sources. Add parser/proposal keys per source if needed.
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Scheduler jobs</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input
+                value={repoSchedulerTimezone}
+                onChange={(e) => setRepoSchedulerTimezone(e.target.value)}
+                placeholder="Timezone (e.g. America/Los_Angeles)"
+                style={{ padding: 8 }}
+              />
+              <input
+                value={repoSchedulerMaxConcurrency}
+                onChange={(e) => setRepoSchedulerMaxConcurrency(e.target.value)}
+                placeholder="Max concurrency"
+                style={{ padding: 8 }}
+              />
+            </div>
+            <textarea
+              value={repoSchedulerJobsJson}
+              onChange={(e) => setRepoSchedulerJobsJson(e.target.value)}
+              placeholder='[{ "id": "daily-brief", "cron": "0 8 * * *", "task": "brief.generate", "enabled": true }]'
+              style={{ padding: 8, minHeight: 90 }}
+            />
+            <div style={{ fontSize: 11, color: "#777" }}>
+              JSON array of scheduler jobs. Include repo/args fields to target specific repos.
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>Service defaults</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <select
+                value={repoServiceEnabled}
+                onChange={(e) => setRepoServiceEnabled(e.target.value as "default" | "true" | "false")}
+                style={{ padding: 8 }}
+              >
+                <option value="default">Enabled (default)</option>
+                <option value="true">Enabled: true</option>
+                <option value="false">Enabled: false</option>
+              </select>
+              <input
+                value={repoServiceSocketPath}
+                onChange={(e) => setRepoServiceSocketPath(e.target.value)}
+                placeholder="Socket path"
+                style={{ padding: 8 }}
+              />
+              <input
+                value={repoServicePidPath}
+                onChange={(e) => setRepoServicePidPath(e.target.value)}
+                placeholder="PID path"
+                style={{ padding: 8 }}
+              />
+              <input
+                value={repoServiceLogPath}
+                onChange={(e) => setRepoServiceLogPath(e.target.value)}
+                placeholder="Log path"
+                style={{ padding: 8 }}
+              />
+              <input
+                value={repoServiceMaxConcurrency}
+                onChange={(e) => setRepoServiceMaxConcurrency(e.target.value)}
+                placeholder="Max concurrency"
+                style={{ padding: 8 }}
+              />
+            </div>
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#666" }}>
             <input type="checkbox" checked={repoReplaceOverrides} onChange={(e) => setRepoReplaceOverrides(e.target.checked)} />
