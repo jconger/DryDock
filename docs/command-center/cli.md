@@ -29,6 +29,7 @@ pnpm --dir apps/command-center-ui cc config set-comment qaFail "/cc qa fail:"
 ```bash
 pnpm --dir apps/command-center-ui cc commands
 pnpm --dir apps/command-center-ui cc commands --owner <org> --repo <name>
+pnpm --dir apps/command-center-ui cc commands --include-agent
 ```
 
 ## Test mode (dry run)
@@ -50,6 +51,11 @@ pnpm --dir apps/command-center-ui cc qa get --feature-id feat_... --json
 pnpm --dir apps/command-center-ui cc qa create --feature-id feat_... --items "Check A|Check B" --json
 pnpm --dir apps/command-center-ui cc qa update --id 1 --status failed --checklist-json '[{"id":"item_1","text":"A","status":"fail","notes":"...","evidence":""}]' --json
 
+# Templates
+pnpm --dir apps/command-center-ui cc templates render --type qa --feature-id feat_... --json
+pnpm --dir apps/command-center-ui cc templates render --type fix-bundle --feature-id feat_... --data-json '{"failed_checks":["Check A failed"],"evidence":"..." }' --json
+pnpm --dir apps/command-center-ui cc templates render --type ralph --feature-id feat_... --json
+
 # PR comments + targets
 pnpm --dir apps/command-center-ui cc pr-comment post --owner org --repo repo --pr 123 --body "/cc qa generate" --json
 pnpm --dir apps/command-center-ui cc recent list --json
@@ -57,7 +63,13 @@ pnpm --dir apps/command-center-ui cc recent list --json
 # PR tracking + final PR creation (local)
 pnpm --dir apps/command-center-ui cc prs track --owner org --repo repo --pr 123 --type working --json
 pnpm --dir apps/command-center-ui cc prs tracked --owner org --repo repo --json
+pnpm --dir apps/command-center-ui cc prs context --owner org --repo repo --pr 123 --json
 pnpm --dir apps/command-center-ui cc final create --owner org --repo repo --pr 123 --mode squash --json
+
+# Agent runs (local)
+pnpm --dir apps/command-center-ui cc agent run --mode propose
+pnpm --dir apps/command-center-ui cc agent run --mode implement --context "Implement per spec"
+pnpm --dir apps/command-center-ui cc agent run --mode fix --prompt "Fix robust: ..."
 ```
 
 Notes:

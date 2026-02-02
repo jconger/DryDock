@@ -26,6 +26,18 @@ type TrackedPr = {
   created_at: string;
   updated_at: string;
 };
+type PrContext = {
+  owner: string;
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  base: string | null;
+  head: string | null;
+  files: string[];
+  diff_snippets: string;
+  truncated: boolean;
+};
 type ConfigResponse = {
   configPath: string | null;
   agentHarness?: { provider?: string; commandPrefix?: string; label?: string };
@@ -92,7 +104,7 @@ const DEFAULT_AGENT: AgentHarnessConfig = {
   commands: DEFAULT_AGENT_COMMANDS,
 };
 const DEFAULT_PROTOCOL: CommentProtocol = DEFAULT_COMMENT_PROTOCOL;
-const DEFAULT_ENTRIES = buildCommandEntries(DEFAULT_AGENT, DEFAULT_PROTOCOL);
+const DEFAULT_ENTRIES = buildCommandEntries(DEFAULT_AGENT, DEFAULT_PROTOCOL, false);
 
 export default function HomePage() {
   const [section, setSection] = useState<SectionId>("brief");
@@ -567,6 +579,19 @@ function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: (
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
+  const [prOwner, setPrOwner] = useState(process.env.NEXT_PUBLIC_GH_OWNER || "");
+  const [prRepo, setPrRepo] = useState(process.env.NEXT_PUBLIC_GH_REPO || "");
+  const [prNumber, setPrNumber] = useState("");
+  const [prContext, setPrContext] = useState<PrContext | null>(null);
+  const [prContextLoading, setPrContextLoading] = useState(false);
+  const [prContextError, setPrContextError] = useState("");
+  const [templateType, setTemplateType] = useState<"" | "qa" | "fix-bundle" | "ralph">("");
+  const [templateContent, setTemplateContent] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateError, setTemplateError] = useState("");
+  const [templateResult, setTemplateResult] = useState("");
+  const [postBusy, setPostBusy] = useState(false);
+  const [postResult, setPostResult] = useState("");
 
   async function loadPacket() {
     setLoading(true);
@@ -596,6 +621,11 @@ function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: (
     loadPacket();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feature.id]);
+
+  useEffect(() => {
+    setPrContext(null);
+    setPrContextError("");
+  }, [prOwner, prRepo, prNumber]);
 
   function updateItem(index: number, patch: Partial<QaChecklistItem>) {
     setChecklist((prev) => {
@@ -697,6 +727,142 @@ function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: (
     await savePacket("passed");
   }
 
+  async function loadPrContext(): Promise<PrContext | null> {
+    if (!prOwner || !prRepo || !prNumber) {
+      setPrContextError("Owner, repo, and PR number are required to load PR context.");
+      return null;
+    }
+    const prNumberValue = Number(prNumber);
+    if (!prNumberValue || Number.isNaN(prNumberValue)) {
+      setPrContextError("PR number must be a valid number.");
+      return null;
+    }
+    setPrContextLoading(true);
+    setPrContextError("");
+    try {
+      const r = await fetch(`/api/prs/context?owner=${encodeURIComponent(prOwner)}&repo=${encodeURIComponent(prRepo)}&pr=${encodeURIComponent(prNumber)}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to load PR context.");
+      const context: PrContext = {
+        owner: prOwner,
+        repo: prRepo,
+        number: j.pr?.number ?? prNumberValue,
+        url: j.pr?.url ?? "",
+        title: j.pr?.title ?? "",
+        base: j.pr?.base ?? null,
+        head: j.pr?.head ?? null,
+        files: j.files ?? [],
+        diff_snippets: j.diff_snippets ?? "",
+        truncated: Boolean(j.truncated),
+      };
+      setPrContext(context);
+      return context;
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to load PR context.";
+      setPrContextError(message);
+      return null;
+    } finally {
+      setPrContextLoading(false);
+    }
+  }
+
+  async function ensurePrContext(): Promise<PrContext | null> {
+    if (!prOwner || !prRepo || !prNumber) return null;
+    if (prContext && prContext.owner === prOwner && prContext.repo === prRepo && String(prContext.number) === prNumber) {
+      return prContext;
+    }
+    return loadPrContext();
+  }
+
+  async function generateTemplate(type: "qa" | "fix-bundle" | "ralph") {
+    setTemplateBusy(true);
+    setTemplateError("");
+    setTemplateResult("");
+    setTemplateType(type);
+    try {
+      const failedItems = checklist.filter((item) => item.status === "fail");
+      if (type === "fix-bundle" && failedItems.length === 0) {
+        setTemplateError("Mark at least one checklist item as fail to generate a Fix Bundle.");
+        return;
+      }
+      const context = await ensurePrContext();
+      const payload: Record<string, unknown> = {
+        type,
+        feature_id: feature.id,
+        feature_title: feature.title,
+      };
+      if (context?.url) payload.working_pr = context.url;
+      if (context?.head) payload.working_branch = context.head;
+      if (context?.files?.length) payload.changed_files = context.files;
+      if (context?.diff_snippets) payload.diff_snippets = context.diff_snippets;
+      if (type === "qa") {
+        payload.acceptance = checklist.map((item) => item.text);
+      }
+      if (type === "fix-bundle") {
+        payload.failed_checks = failedItems.map((item) => (item.notes ? `${item.text} — ${item.notes}` : item.text));
+        const evidenceLines = failedItems.map((item) => item.evidence).filter(Boolean);
+        if (evidenceLines.length > 0) payload.evidence = evidenceLines.join("\n");
+      }
+      if (type === "ralph") {
+        payload.ralph_checklist = checklist.map((item) => item.text);
+      }
+      const r = await fetch("/api/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to generate template.");
+      setTemplateContent(j.content || "");
+      setTemplateResult("Template ready.");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to generate template.";
+      setTemplateError(message);
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function copyTemplate() {
+    if (!templateContent) return;
+    try {
+      await navigator.clipboard.writeText(templateContent);
+      setTemplateResult("Copied to clipboard.");
+    } catch {
+      setTemplateError("Unable to copy template.");
+    }
+  }
+
+  async function postTemplate() {
+    if (!templateContent) return;
+    if (!prOwner || !prRepo || !prNumber) {
+      setTemplateError("Owner, repo, and PR number are required to post a template.");
+      return;
+    }
+    const prValue = Number(prNumber);
+    if (!prValue || Number.isNaN(prValue)) {
+      setTemplateError("PR number must be a valid number.");
+      return;
+    }
+    setPostBusy(true);
+    setPostResult("");
+    try {
+      const r = await fetch("/api/pr-comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: prOwner, repo: prRepo, pr_number: prValue, body: templateContent }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to post template.");
+      setPostResult(`Posted to PR: ${j.url}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to post template.";
+      setTemplateError(message);
+    } finally {
+      setPostBusy(false);
+    }
+  }
+
   if (loading && !packet) {
     return <div style={{ color: "#666", marginTop: 12 }}>Loading QA packet...</div>;
   }
@@ -793,6 +959,99 @@ function QaRunner({ feature, onRefresh }: { feature: FeatureRecord; onRefresh: (
             <button onClick={markPassed} disabled={loading} style={{ padding: "8px 12px" }}>
               Mark feature passed
             </button>
+          </div>
+
+          <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
+            <div style={{ fontWeight: 600 }}>Templates</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 12, color: "#666" }}>PR context (optional)</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <input
+                  value={prOwner}
+                  onChange={(e) => setPrOwner(e.target.value)}
+                  placeholder="Owner"
+                  style={{ padding: 8 }}
+                />
+                <input
+                  value={prRepo}
+                  onChange={(e) => setPrRepo(e.target.value)}
+                  placeholder="Repo"
+                  style={{ padding: 8 }}
+                />
+                <input
+                  value={prNumber}
+                  onChange={(e) => setPrNumber(e.target.value)}
+                  placeholder="PR #"
+                  style={{ padding: 8 }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button onClick={loadPrContext} disabled={prContextLoading} style={{ padding: "6px 10px" }}>
+                  {prContextLoading ? "Loading PR context..." : "Load PR context"}
+                </button>
+                {prContext?.url && (
+                  <span style={{ fontSize: 12, color: "#666" }}>
+                    Loaded {prContext.owner}/{prContext.repo}#{prContext.number}
+                  </span>
+                )}
+                {prContext?.truncated && (
+                  <span style={{ fontSize: 12, color: "#a15c00" }}>Diff truncated</span>
+                )}
+              </div>
+              {prContextError && (
+                <div style={{ padding: 10, border: "1px solid #f2c4c4", background: "#fff4f4", borderRadius: 8 }}>
+                  {prContextError}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={() => generateTemplate("qa")} disabled={templateBusy} style={{ padding: "8px 12px" }}>
+                {templateBusy && templateType === "qa" ? "Generating..." : "Generate QA packet"}
+              </button>
+              <button onClick={() => generateTemplate("fix-bundle")} disabled={templateBusy} style={{ padding: "8px 12px" }}>
+                {templateBusy && templateType === "fix-bundle" ? "Generating..." : "Generate Fix Bundle"}
+              </button>
+              <button onClick={() => generateTemplate("ralph")} disabled={templateBusy} style={{ padding: "8px 12px" }}>
+                {templateBusy && templateType === "ralph" ? "Generating..." : "Generate Ralph report"}
+              </button>
+            </div>
+            {templateError && (
+              <div style={{ padding: 10, border: "1px solid #f2c4c4", background: "#fff4f4", borderRadius: 8 }}>
+                {templateError}
+              </div>
+            )}
+            {templateResult && <div style={{ color: "#555" }}>{templateResult}</div>}
+            {templateContent && (
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 12, color: "#666" }}>
+                  Preview {templateType ? `(${templateType})` : ""}
+                </div>
+                <textarea
+                  value={templateContent}
+                  onChange={(e) => setTemplateContent(e.target.value)}
+                  style={{ minHeight: 220, padding: 8, fontFamily: "monospace" }}
+                />
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button onClick={copyTemplate} style={{ padding: "6px 10px" }}>
+                    Copy to clipboard
+                  </button>
+                  <button onClick={postTemplate} disabled={postBusy} style={{ padding: "6px 10px" }}>
+                    {postBusy ? "Posting..." : "Post to PR"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTemplateContent("");
+                      setTemplateResult("");
+                      setPostResult("");
+                    }}
+                    style={{ padding: "6px 10px" }}
+                  >
+                    Clear
+                  </button>
+                </div>
+                {postResult && <div style={{ color: "#555" }}>{postResult}</div>}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1039,6 +1298,11 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
   const [finalBusy, setFinalBusy] = useState(false);
   const [finalResult, setFinalResult] = useState<string>("");
   const [trackResult, setTrackResult] = useState<string>("");
+  const [agentContext, setAgentContext] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentResult, setAgentResult] = useState("");
+  const [agentOutput, setAgentOutput] = useState("");
+  const [agentError, setAgentError] = useState("");
 
   const selectedEntry = useMemo(() => entries.find((entry) => entry.value === command), [entries, command]);
   const finalBody = useMemo(() => {
@@ -1203,6 +1467,34 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
     }
   }
 
+  async function runAgent(mode: "propose" | "implement" | "fix") {
+    setAgentBusy(true);
+    setAgentResult("");
+    setAgentOutput("");
+    setAgentError("");
+    try {
+      const payload: { mode: "propose" | "implement" | "fix"; context?: string } = { mode };
+      if (agentContext.trim()) payload.context = agentContext.trim();
+      const r = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) {
+        throw new Error(j.error || j.stderr || "Failed to run agent.");
+      }
+      const combined = [j.stdout, j.stderr].filter(Boolean).join("\n");
+      setAgentOutput(combined || "(no output)");
+      setAgentResult(`Exit code: ${j.exitCode} — ${j.command}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to run agent.";
+      setAgentError(message);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
   return (
     <div style={{ display: "grid", gap: 16, maxWidth: 980 }}>
       <div>
@@ -1260,6 +1552,43 @@ function PRCommentPanel({ onAfterPost }: { onAfterPost: () => void }) {
           {result}
         </div>
       )}
+
+      <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "grid", gap: 10 }}>
+        <h4 style={{ marginTop: 0 }}>Agent Runs (Local)</h4>
+        <div style={{ fontSize: 12, color: "#666" }}>
+          Uses local binaries configured in `.command-center.jsonc` (agentHarness.exec).
+        </div>
+        <textarea
+          value={agentContext}
+          onChange={(e) => setAgentContext(e.target.value)}
+          placeholder="Optional context to append to the prompt"
+          style={{ minHeight: 90, padding: 8 }}
+        />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => runAgent("propose")} disabled={agentBusy} style={{ padding: "8px 12px" }}>
+            {agentBusy ? "Running..." : "Run propose"}
+          </button>
+          <button onClick={() => runAgent("implement")} disabled={agentBusy} style={{ padding: "8px 12px" }}>
+            {agentBusy ? "Running..." : "Run implement"}
+          </button>
+          <button onClick={() => runAgent("fix")} disabled={agentBusy} style={{ padding: "8px 12px" }}>
+            {agentBusy ? "Running..." : "Run fix"}
+          </button>
+        </div>
+        {agentError && (
+          <div style={{ padding: 10, border: "1px solid #f2c4c4", background: "#fff4f4", borderRadius: 8 }}>
+            {agentError}
+          </div>
+        )}
+        {agentResult && <div style={{ color: "#555" }}>{agentResult}</div>}
+        {agentOutput && (
+          <textarea
+            value={agentOutput}
+            readOnly
+            style={{ minHeight: 160, padding: 8, fontFamily: "monospace" }}
+          />
+        )}
+      </div>
 
       <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
         <h4 style={{ marginTop: 0 }}>Final PR (local)</h4>

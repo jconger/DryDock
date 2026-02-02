@@ -17,6 +17,11 @@ DryDock supports three agent harness providers. Configure once and both the UI a
       "proposePlans": "propose 3 implementation plans: minimal, balanced, robustness-first...",
       "implement": "implement per spec in issue/PR...",
       "fixRobust": "fix robust: address QA failures..."
+    },
+    "exec": {
+      "bin": "codex",
+      "args": ["{{PROMPT}}"],
+      "stdin": false
     }
   }
 }
@@ -27,4 +32,11 @@ DryDock supports three agent harness providers. Configure once and both the UI a
 pnpm --dir apps/command-center-ui cc config set-provider codex
 pnpm --dir apps/command-center-ui cc config set-prefix /assistant
 pnpm --dir apps/command-center-ui cc config set-command proposePlans "propose 2 plans: minimal + robust"
+```
+
+## Run locally via CLI
+```bash
+pnpm --dir apps/command-center-ui cc agent run --mode propose
+pnpm --dir apps/command-center-ui cc agent run --mode implement --context "Implement per spec"
+pnpm --dir apps/command-center-ui cc agent run --mode fix --prompt "fix robust: ..."
 ```

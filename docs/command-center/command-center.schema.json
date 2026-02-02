@@ -33,6 +33,17 @@
             "implement": { "type": "string" },
             "fixRobust": { "type": "string" }
           }
+        },
+        "exec": {
+          "type": "object",
+          "properties": {
+            "bin": { "type": "string" },
+            "args": {
+              "type": ["array", "string"],
+              "items": { "type": "string" }
+            },
+            "stdin": { "type": "boolean" }
+          }
         }
       }
     }

@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { Octokit } from "@octokit/rest";
 
@@ -13,6 +13,12 @@ const AGENT_PRESETS = {
   opencode: { label: "OpenCode", commandPrefix: "/opencode" },
   codex: { label: "Codex", commandPrefix: "/codex" },
   "claude-code": { label: "Claude Code", commandPrefix: "/claude" },
+};
+
+const AGENT_EXEC_DEFAULTS = {
+  opencode: { bin: "opencode", args: ["{{PROMPT}}"], stdin: false },
+  codex: { bin: "codex", args: ["{{PROMPT}}"], stdin: false },
+  "claude-code": { bin: "claude", args: ["{{PROMPT}}"], stdin: false },
 };
 
 const DEFAULT_AGENT_COMMANDS = {
@@ -34,6 +40,21 @@ const DEFAULT_COMMENT_PROTOCOL = {
     ralphAccept: "/cc ralph accept:",
     finalCreate: "/cc final create",
   },
+};
+
+const DEFAULT_REPO_COMMANDS = {
+  install: "pnpm install --frozen-lockfile",
+  dev: "pnpm dev",
+  lint: "pnpm lint",
+  typecheck: "pnpm typecheck",
+  test: "pnpm test",
+  build: "pnpm build",
+};
+
+const DEFAULT_TEMPLATES = {
+  qaPacketPath: "docs/command-center/templates/qa-packet.md",
+  fixBundlePath: "docs/command-center/templates/fix-bundle.md",
+  ralphReportPath: "docs/command-center/templates/ralph-report.md",
 };
 
 function stripJsonComments(raw) {
@@ -97,24 +118,13 @@ function ensureConfigPath() {
       blocked: "ai:blocked",
     },
     branches: { workingPrefix: "work/", finalPrefix: "final/" },
-    commands: {
-      install: "pnpm install --frozen-lockfile",
-      dev: "pnpm dev",
-      lint: "pnpm lint",
-      typecheck: "pnpm typecheck",
-      test: "pnpm test",
-      build: "pnpm build",
-    },
+    commands: DEFAULT_REPO_COMMANDS,
     qa: {
       maxChecklistItems: 25,
       requireCiGreenToCreateFinalPr: false,
       requireRalphGateBeforeFinalPr: true,
     },
-    templates: {
-      qaPacketPath: "docs/command-center/templates/qa-packet.md",
-      fixBundlePath: "docs/command-center/templates/fix-bundle.md",
-      ralphReportPath: "docs/command-center/templates/ralph-report.md",
-    },
+    templates: DEFAULT_TEMPLATES,
     commentProtocol: DEFAULT_COMMENT_PROTOCOL,
     agentHarness: {
       provider: "opencode",
@@ -129,11 +139,20 @@ function ensureConfigPath() {
 function resolveAgentHarness(config) {
   const provider = config.agentHarness?.provider in AGENT_PRESETS ? config.agentHarness?.provider : "opencode";
   const preset = AGENT_PRESETS[provider];
+  const execDefaults = AGENT_EXEC_DEFAULTS[provider];
+  const execOverride = config.agentHarness?.exec ?? {};
+  const execArgsRaw = execOverride.args ?? execDefaults.args;
+  const execArgs = Array.isArray(execArgsRaw) ? execArgsRaw : [String(execArgsRaw)];
   return {
     provider,
     label: preset.label,
     commandPrefix: config.agentHarness?.commandPrefix ?? preset.commandPrefix,
     commands: { ...DEFAULT_AGENT_COMMANDS, ...(config.agentHarness?.commands ?? {}) },
+    exec: {
+      bin: execOverride.bin ?? execDefaults.bin,
+      args: execArgs,
+      stdin: execOverride.stdin ?? execDefaults.stdin ?? false,
+    },
   };
 }
 
@@ -142,6 +161,14 @@ function resolveCommentProtocol(config) {
     prefix: config.commentProtocol?.prefix ?? DEFAULT_COMMENT_PROTOCOL.prefix,
     commands: { ...DEFAULT_COMMENT_PROTOCOL.commands, ...(config.commentProtocol?.commands ?? {}) },
   };
+}
+
+function resolveRepoCommands(config) {
+  return { ...DEFAULT_REPO_COMMANDS, ...(config.commands ?? {}) };
+}
+
+function resolveTemplates(config) {
+  return { ...DEFAULT_TEMPLATES, ...(config.templates ?? {}) };
 }
 
 function usage() {
@@ -155,17 +182,20 @@ Usage:
   cc config set-prefix <commandPrefix> [--test]
   cc config set-command <proposePlans|implement|fixRobust> <text> [--test]
   cc config set-comment <qaGenerate|qaPass|qaFail|ralphRun|ralphAccept|finalCreate> <text> [--test]
-  cc commands [--owner <org> --repo <name>] [--test]
+  cc commands [--owner <org> --repo <name>] [--include-agent] [--test]
+  cc agent run --mode <propose|implement|fix> [--prompt <text>] [--context <text>] [--json] [--test]
   cc features list [--limit N] [--json] [--test]
   cc features create --title <title> [--description <text>] [--priority <low|med|high>] [--impact <low|med|high>] [--effort <low|med|high>] [--confidence <low|med|high>] [--tags a,b] [--json] [--test]
   cc features status --id <feature_id> --status <STATUS> [--json] [--test]
   cc repos list [--json] [--test]
   cc repos add --owner <org> --name <repo> [--default-branch main] [--github-repo-id 123] [--json] [--test]
   cc repos set-agent --owner <org> --name <repo> [--provider opencode] [--prefix /opencode] [--command-propose "<text>"] [--command-implement "<text>"] [--command-fix "<text>"] [--json] [--test]
+  cc templates render --type <qa|fix-bundle|ralph> [--feature-id <id>] [--data-json <json>] [--json] [--test]
   cc qa get --feature-id <id> [--json] [--test]
   cc qa create --feature-id <id> --items "one|two|three" [--json] [--test]
   cc qa update --id <id> [--status <testing|failed|passed>] [--checklist-json <json>] [--json] [--test]
   cc prs list --owner <org> --repo <name> [--json] [--test]
+  cc prs context --owner <org> --repo <name> --pr <number> [--json] [--test]
   cc prs track --owner <org> --repo <name> --pr <number> --type <working|final> [--working-pr <number>] [--json] [--test]
   cc prs tracked --owner <org> --repo <name> [--type <working|final>] [--json] [--test]
   cc pr-comment post --owner <org> --repo <name> --pr <number> --body <text> [--json] [--test]
@@ -236,6 +266,81 @@ function loadEnvLocal() {
     map[key] = value;
   }
   return map;
+}
+
+function normalizeList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") {
+    return value.split("|").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function limitList(items, maxItems) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, Math.max(0, maxItems));
+}
+
+function renderChecklist(items, fallback) {
+  if (!items.length) return fallback;
+  return items.map((item) => `- [ ] ${item}`).join("\n");
+}
+
+function renderBullets(items, fallback) {
+  if (!items.length) return fallback;
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function renderNumbered(items, fallback) {
+  if (!items.length) return fallback;
+  return items.map((item, idx) => `${idx + 1}. ${item}`).join("\n");
+}
+
+function renderTemplate(template, values) {
+  return template.replace(/{{\s*([A-Z0-9_]+)\s*}}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      return String(values[key]);
+    }
+    return match;
+  });
+}
+
+function resolvePrompt(mode, agent, promptOverride, context) {
+  let base = "";
+  if (promptOverride) {
+    base = promptOverride;
+  } else if (mode === "propose") {
+    base = agent.commands.proposePlans;
+  } else if (mode === "implement") {
+    base = agent.commands.implement;
+  } else if (mode === "fix") {
+    base = agent.commands.fixRobust;
+  }
+  const trimmed = base.trim();
+  if (context) {
+    return `${trimmed}\n\n${context.trim()}`.trim();
+  }
+  return trimmed;
+}
+
+function buildExecArgs(args, prompt, repoRoot, allowAppend) {
+  const hasPrompt = args.some((arg) => String(arg).includes("{{PROMPT}}"));
+  const replaced = args.map((arg) => String(arg)
+    .replaceAll("{{PROMPT}}", prompt)
+    .replaceAll("{{REPO_ROOT}}", repoRoot)
+  );
+  if (!hasPrompt && prompt && allowAppend) {
+    replaced.push(prompt);
+  }
+  return replaced;
+}
+
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function getDb() {
@@ -347,6 +452,11 @@ function listFeatures(limit = 50) {
   const db = getDb();
   const stmt = db.prepare("SELECT * FROM features ORDER BY created_at DESC LIMIT ?");
   return stmt.all(limit);
+}
+
+function getFeatureById(id) {
+  const db = getDb();
+  return db.prepare("SELECT * FROM features WHERE id = ?").get(id) ?? null;
 }
 
 function createFeature(payload) {
@@ -474,6 +584,70 @@ function updateQaPacket(id, updates) {
   db.prepare("UPDATE qa_packets SET status = ?, checklist_json = ?, updated_at = ? WHERE id = ?")
     .run(status, checklist_json, updated_at, id);
   return { ...existing, status, checklist_json, updated_at };
+}
+
+function buildTemplateValues({ type, data, feature, agent, commands, maxItems }) {
+  const featureId = data.feature_id || feature?.id || "(feature id)";
+  const featureTitle = data.feature_title || feature?.title || "(feature title)";
+  const workingPr = data.working_pr || "(working PR url)";
+  const workingBranch = data.working_branch || "(working branch)";
+  const specRef = data.spec_ref || "(spec reference)";
+  const now = nowIso();
+
+  const acceptanceItems = limitList(normalizeList(data.acceptance), maxItems);
+  const edgeItems = limitList(normalizeList(data.edge), maxItems);
+  const ralphChecklistItems = limitList(normalizeList(data.ralph_checklist), maxItems);
+  const failedItems = limitList(normalizeList(data.failed_checks), maxItems);
+  const reproSteps = limitList(normalizeList(data.repro_steps), maxItems);
+  const changedFiles = limitList(normalizeList(data.changed_files), maxItems);
+  const ralphFindings = limitList(normalizeList(data.ralph_findings), maxItems);
+
+  const values = {
+    FEATURE_ID: featureId,
+    FEATURE_TITLE: featureTitle,
+    WORKING_PR_URL: workingPr,
+    WORKING_BRANCH: workingBranch,
+    SPEC_REF: specRef,
+    GENERATED_AT_ISO: now,
+    CMD_INSTALL: commands.install,
+    CMD_DEV: commands.dev,
+    CMD_LINT: commands.lint,
+    CMD_TYPECHECK: commands.typecheck,
+    CMD_TEST: commands.test,
+    AGENT_PROVIDER: agent.provider,
+    AGENT_COMMAND_PREFIX: agent.commandPrefix,
+    AGENT_PLAN_PROMPT: agent.commands.proposePlans,
+    RESULT_NOTES: data.result_notes || "(add notes)",
+  };
+
+  if (type === "qa") {
+    return {
+      ...values,
+      ACCEPTANCE_CHECKLIST: renderChecklist(acceptanceItems, "- [ ] Add acceptance checks"),
+      EDGE_CASE_CHECKLIST: renderChecklist(edgeItems, "- [ ] Add edge case coverage"),
+      RALPH_CHECKLIST: renderChecklist(ralphChecklistItems, "- [ ] Add Ralph checks"),
+    };
+  }
+
+  if (type === "fix-bundle") {
+    return {
+      ...values,
+      FAILED_CHECKS: renderBullets(failedItems, "- (no failed checks provided)"),
+      REPRO_STEPS: renderNumbered(reproSteps, "1. Add repro steps"),
+      EXPECTED: data.expected || "(expected behavior)",
+      ACTUAL: data.actual || "(actual behavior)",
+      EVIDENCE: data.evidence || "(evidence/logs)",
+      CHANGED_FILES: renderBullets(changedFiles, "- (no files listed)"),
+      DIFF_SNIPPETS: data.diff_snippets || "(add diff snippets)",
+      FIX_STYLE: data.fix_style || "robust",
+    };
+  }
+
+  return {
+    ...values,
+    RALPH_FINDINGS: renderBullets(ralphFindings, "- (add Ralph findings)"),
+    RALPH_CHECKLIST: renderChecklist(ralphChecklistItems, "- [ ] Add Ralph checklist items"),
+  };
 }
 
 function listRecentTargets(limit = 10) {
@@ -823,8 +997,9 @@ async function main() {
     if (testMode) {
       const repoOwner = parseFlagValue(rest, "--owner");
       const repoName = parseFlagValue(rest, "--repo");
+      const includeAgent = hasFlag(rest, "--include-agent");
       const extra = repoOwner && repoName ? ` for ${repoOwner}/${repoName}` : "";
-      outputDryRun([`read ${CONFIG_FILENAME}`, `print command list${extra}`], jsonOutput);
+      outputDryRun([`read ${CONFIG_FILENAME}`, `print command list${extra}${includeAgent ? " (including agent commands)" : ""}`], jsonOutput);
       return;
     }
     const { config } = loadConfig();
@@ -833,6 +1008,7 @@ async function main() {
     const repoOwner = parseFlagValue(rest, "--owner");
     const repoName = parseFlagValue(rest, "--repo");
     const resolvedAgent = repoOwner && repoName ? resolveRepoAgent(repoOwner, repoName, agent) : agent;
+    const includeAgent = hasFlag(rest, "--include-agent");
     const lines = [
       protocol.commands.qaGenerate,
       protocol.commands.qaPass,
@@ -840,10 +1016,14 @@ async function main() {
       protocol.commands.ralphRun,
       `${protocol.commands.ralphAccept} <reason>`,
       protocol.commands.finalCreate,
-      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.proposePlans}`,
-      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.implement}`,
-      `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.fixRobust}`,
     ];
+    if (includeAgent) {
+      lines.push(
+        `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.proposePlans}`,
+        `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.implement}`,
+        `${resolvedAgent.commandPrefix} ${resolvedAgent.commands.fixRobust}`
+      );
+    }
     console.log(lines.join("\n"));
     return;
   }
@@ -972,6 +1152,118 @@ async function main() {
     }
   }
 
+  if (command === "agent") {
+    const sub = rest[0];
+    if (sub === "run") {
+      const mode = parseFlagValue(rest, "--mode");
+      if (!mode || !["propose", "implement", "fix"].includes(mode)) {
+        console.error("Usage: cc agent run --mode <propose|implement|fix> [--prompt <text>] [--context <text>]");
+        process.exit(1);
+      }
+      const promptOverride = parseFlagValue(rest, "--prompt");
+      const context = parseFlagValue(rest, "--context");
+      const stdinAllowed = !promptOverride && !context && !process.stdin.isTTY;
+      const stdinValue = stdinAllowed ? readStdin() : "";
+      const { config } = loadConfig();
+      const agent = resolveAgentHarness(config);
+      const repoRoot = findRepoRoot();
+      const prompt = resolvePrompt(mode, agent, promptOverride || undefined, context || undefined) || stdinValue.trim();
+      if (!prompt) {
+        console.error("Prompt is required. Provide --prompt, --context, or pipe content to stdin.");
+        process.exit(1);
+      }
+      const execConfig = agent.exec;
+      const args = buildExecArgs(execConfig.args, prompt, repoRoot, !execConfig.stdin);
+      if (testMode) {
+        const cmdPreview = `${execConfig.bin} ${args.join(" ")}`.trim();
+        outputDryRun([`exec: ${cmdPreview}`, execConfig.stdin ? "stdin: prompt" : "stdin: none"], jsonOutput);
+        return;
+      }
+      const spawnOpts = {
+        cwd: repoRoot,
+        encoding: "utf8",
+        input: execConfig.stdin ? prompt : undefined,
+        stdio: jsonOutput ? ["pipe", "pipe", "pipe"] : "inherit",
+      };
+      const result = spawnSync(execConfig.bin, args, spawnOpts);
+      if (jsonOutput) {
+        const payload = {
+          ok: result.status === 0,
+          exitCode: result.status ?? 1,
+          stdout: result.stdout || "",
+          stderr: result.stderr || "",
+          command: `${execConfig.bin} ${args.join(" ")}`.trim(),
+        };
+        console.log(JSON.stringify(payload));
+        return;
+      }
+      if (result.error) {
+        console.error(result.error.message);
+        process.exit(1);
+      }
+      if (typeof result.status === "number" && result.status !== 0) {
+        process.exit(result.status);
+      }
+      return;
+    }
+  }
+
+  if (command === "templates") {
+    const sub = rest[0];
+    if (sub === "render") {
+      const type = parseFlagValue(rest, "--type");
+      if (!type || !["qa", "fix-bundle", "ralph"].includes(type)) {
+        console.error("Usage: cc templates render --type <qa|fix-bundle|ralph> [--feature-id <id>] [--data-json <json>]");
+        process.exit(1);
+      }
+      const featureId = parseFlagValue(rest, "--feature-id");
+      const dataJson = parseFlagValue(rest, "--data-json");
+      if (testMode) {
+        const templateHint = type === "qa"
+          ? DEFAULT_TEMPLATES.qaPacketPath
+          : type === "fix-bundle"
+            ? DEFAULT_TEMPLATES.fixBundlePath
+            : DEFAULT_TEMPLATES.ralphReportPath;
+        outputDryRun([`read template ${templateHint}`, "render template with provided data"], jsonOutput);
+        return;
+      }
+      let data = {};
+      if (dataJson) {
+        try {
+          const parsed = JSON.parse(dataJson);
+          if (parsed && typeof parsed === "object") {
+            data = parsed;
+          }
+        } catch {
+          console.error("Invalid --data-json payload.");
+          process.exit(1);
+        }
+      }
+      const { config } = loadConfig();
+      const templates = resolveTemplates(config);
+      const commands = resolveRepoCommands(config);
+      const agent = resolveAgentHarness(config);
+      const templatePath = type === "qa"
+        ? templates.qaPacketPath
+        : type === "fix-bundle"
+          ? templates.fixBundlePath
+          : templates.ralphReportPath;
+      const repoRoot = findRepoRoot();
+      const fullPath = path.join(repoRoot, templatePath);
+      if (!fs.existsSync(fullPath)) {
+        console.error(`Template not found at ${fullPath}`);
+        process.exit(1);
+      }
+      const feature = featureId ? getFeatureById(featureId) : null;
+      const maxItems = config.qa?.maxChecklistItems ?? 25;
+      const values = buildTemplateValues({ type, data, feature, agent, commands, maxItems });
+      const content = renderTemplate(fs.readFileSync(fullPath, "utf8"), values);
+      const payload = { type, templatePath, content };
+      console.log(jsonOutput ? JSON.stringify(payload) : content);
+      return;
+    }
+  }
+
   if (command === "qa") {
     const sub = rest[0];
     if (sub === "get") {
@@ -1060,6 +1352,60 @@ async function main() {
       }
       const items = await listOpenPrs(owner, repo);
       console.log(jsonOutput ? JSON.stringify({ items }) : JSON.stringify({ items }, null, 2));
+      return;
+    }
+    if (sub === "context") {
+      const owner = parseFlagValue(rest, "--owner");
+      const repo = parseFlagValue(rest, "--repo");
+      const prRaw = parseFlagValue(rest, "--pr");
+      if (!owner || !repo || !prRaw) {
+        console.error("Usage: cc prs context --owner <org> --repo <name> --pr <number>");
+        process.exit(1);
+      }
+      if (testMode) {
+        outputDryRun([
+          `github: pulls.get owner=${owner} repo=${repo} pull_number=${prRaw}`,
+          `github: pulls.listFiles owner=${owner} repo=${repo} pull_number=${prRaw} per_page=100`,
+          "render PR context",
+        ], jsonOutput);
+        return;
+      }
+      const prNumber = Number(prRaw);
+      if (!prNumber || Number.isNaN(prNumber)) {
+        console.error("--pr must be a number.");
+        process.exit(1);
+      }
+      const octokit = getOctokit();
+      const prResp = await octokit.pulls.get({ owner, repo, pull_number: prNumber });
+      const pr = prResp.data;
+      const filesResp = await octokit.pulls.listFiles({ owner, repo, pull_number: prNumber, per_page: 100 });
+      const files = filesResp.data || [];
+      const fileNames = files.map((file) => file.filename);
+      const maxFiles = 12;
+      const maxChars = 12000;
+      let diffSnippets = files
+        .filter((file) => file.patch)
+        .slice(0, maxFiles)
+        .map((file) => `### ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\``)
+        .join("\n\n");
+      let truncated = files.length > maxFiles;
+      if (diffSnippets.length > maxChars) {
+        diffSnippets = diffSnippets.slice(0, maxChars) + "\n\n...(truncated)";
+        truncated = true;
+      }
+      const payload = {
+        pr: {
+          number: pr.number,
+          title: pr.title,
+          url: pr.html_url,
+          base: pr.base?.ref ?? null,
+          head: pr.head?.ref ?? null,
+        },
+        files: fileNames,
+        diff_snippets: diffSnippets,
+        truncated,
+      };
+      console.log(jsonOutput ? JSON.stringify(payload) : JSON.stringify(payload, null, 2));
       return;
     }
     if (sub === "track") {

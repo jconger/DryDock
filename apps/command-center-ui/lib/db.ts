@@ -10,7 +10,8 @@ const legacyDbPath = path.join(legacyDataDir, "command-center.sqlite");
 const dataDir = fs.existsSync(legacyDbPath) ? legacyDataDir : defaultDataDir;
 const dbPath = path.join(dataDir, "command-center.sqlite");
 
-let db: Database.Database | null = null;
+type SqliteDatabase = InstanceType<typeof Database>;
+let db: SqliteDatabase | null = null;
 
 export function getDb() {
   if (db) return db;
@@ -21,7 +22,7 @@ export function getDb() {
   return db;
 }
 
-function migrate(d: Database.Database) {
+function migrate(d: SqliteDatabase) {
   d.exec(`
     CREATE TABLE IF NOT EXISTS pr_targets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +95,7 @@ export function savePrTarget(owner: string, repo: string, pr_number: number) {
 
 export function listRecentTargets(limit = 10): Array<{owner: string; repo: string; pr_number: number; created_at: string;}> {
   const d = getDb();
-  const stmt = d.prepare(
+  const stmt = d.prepare<{ owner: string; repo: string; pr_number: number; created_at: string }>(
     "SELECT owner, repo, pr_number, created_at FROM pr_targets ORDER BY id DESC LIMIT ?"
   );
   return stmt.all(limit);
